@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Tuple
 import httpx
 
 ARCTIC_SHIFT_BASE = "https://arctic-shift.photon-reddit.com"
-POST_FIELDS = "id,title,selftext,created_utc,score,num_comments,author,permalink"
+# Use only documented selectable fields.
+POST_FIELDS = "id,title,selftext,created_utc,score,num_comments,author"
 COMMENT_FIELDS = "id,body,created_utc,score,author,parent_id"
 
 # simple in-memory caches
@@ -28,6 +29,21 @@ def _normalize_subreddit(value: str) -> str:
         raw = match.group(1)
 
     return raw.strip().strip("/")
+
+
+def _extract_error_detail(resp: httpx.Response) -> str:
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            for key in ("error", "message", "detail"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return str(payload)
+        return str(payload)
+    except Exception:
+        text = (resp.text or "").strip()
+        return text[:300] if text else ""
 
 
 async def fetch_reddit_posts(subreddit: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -58,7 +74,9 @@ async def fetch_reddit_posts(subreddit: str, limit: int = 100) -> List[Dict[str,
         _post_cache[normalized] = (now, [])
         return []
     if resp.status_code != 200:
-        raise RuntimeError(f"Arctic Shift posts request failed (HTTP {resp.status_code})")
+        detail = _extract_error_detail(resp)
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Arctic Shift posts request failed (HTTP {resp.status_code}){suffix}")
 
     try:
         data = resp.json()
@@ -78,7 +96,6 @@ async def fetch_reddit_posts(subreddit: str, limit: int = 100) -> List[Dict[str,
         if not post_id:
             continue
 
-        permalink = item.get("permalink") or f"https://www.reddit.com/comments/{post_id}/"
         posts.append(
             {
                 "id": str(post_id),
@@ -88,7 +105,7 @@ async def fetch_reddit_posts(subreddit: str, limit: int = 100) -> List[Dict[str,
                 "score": item.get("score", 0) or 0,
                 "num_comments": item.get("num_comments", 0) or 0,
                 "author": item.get("author", "") or "",
-                "permalink": permalink,
+                "permalink": f"https://www.reddit.com/comments/{post_id}/",
             }
         )
 
@@ -106,7 +123,8 @@ async def fetch_comments_for_post(post_id: str, limit: int = 50) -> List[Dict[st
         return cached[1][:limit]
 
     params = {
-        "link_id": f"t3_{post_id}",
+        # Arctic Shift accepts t3_ prefix, but bare ID is documented and safer.
+        "link_id": post_id,
         "sort": "desc",
         "limit": 100,
         "fields": COMMENT_FIELDS,
@@ -123,7 +141,9 @@ async def fetch_comments_for_post(post_id: str, limit: int = 50) -> List[Dict[st
         _comments_cache[post_id] = (now, [])
         return []
     if resp.status_code != 200:
-        raise RuntimeError(f"Arctic Shift comments request failed (HTTP {resp.status_code})")
+        detail = _extract_error_detail(resp)
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Arctic Shift comments request failed (HTTP {resp.status_code}){suffix}")
 
     try:
         data = resp.json()
@@ -140,7 +160,6 @@ async def fetch_comments_for_post(post_id: str, limit: int = 50) -> List[Dict[st
             continue
 
         parent_id = str(item.get("parent_id", ""))
-        # Keep only top-level comments (replies to the post itself)
         if parent_id and not parent_id.startswith("t3_"):
             continue
 
