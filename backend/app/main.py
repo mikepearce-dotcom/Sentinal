@@ -1,4 +1,5 @@
 from os import environ
+from typing import Dict, List, Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, Response
@@ -12,7 +13,7 @@ ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 ALLOWED_HEADERS = "Content-Type, Authorization"
 
 
-def _normalize_origin(value: str | None) -> str:
+def _normalize_origin(value: Optional[str]) -> str:
     if not value:
         return ""
 
@@ -31,16 +32,16 @@ def _normalize_origin(value: str | None) -> str:
     if (scheme == "https" and (port is None or port == 443)) or (
         scheme == "http" and (port is None or port == 80)
     ):
-        return f"{scheme}://{host}"
+        return "{}://{}".format(scheme, host)
 
-    return f"{scheme}://{host}:{port}"
+    return "{}://{}:{}".format(scheme, host, port)
 
 
-def _parse_cors_origins(raw_value: str | None) -> list[str]:
+def _parse_cors_origins(raw_value: Optional[str]) -> List[str]:
     if not raw_value:
         return []
 
-    origins: list[str] = []
+    origins: List[str] = []
     for item in raw_value.split(","):
         normalized = _normalize_origin(item)
         if normalized and normalized not in origins:
@@ -48,7 +49,7 @@ def _parse_cors_origins(raw_value: str | None) -> list[str]:
     return origins
 
 
-def _build_cors_headers(origin: str) -> dict[str, str]:
+def _build_cors_headers(origin: str) -> Dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
@@ -66,7 +67,7 @@ default_origins = [
 allowed_origins = configured_origins or default_origins
 allowed_origin_set = set(allowed_origins)
 
-print(f"CORS allowlist: {allowed_origins}")
+print("CORS allowlist: {}".format(allowed_origins))
 
 
 @app.middleware("http")

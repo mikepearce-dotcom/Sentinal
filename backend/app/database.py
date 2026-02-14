@@ -1,7 +1,9 @@
 import os
+from typing import Optional
+
 from motor.motor_asyncio import AsyncIOMotorClient
 
-client: AsyncIOMotorClient | None = None
+client: Optional[AsyncIOMotorClient] = None
 db = None
 
 

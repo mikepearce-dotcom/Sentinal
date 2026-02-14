@@ -1,10 +1,10 @@
 import os
 import httpx
 import time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 # simple in-memory cache for posts: {subreddit: (timestamp, data)}
-_post_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+_post_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 CACHE_TTL = 600  # 10 minutes
 
 
@@ -77,3 +77,4 @@ async def analyze_posts_with_ai(posts: List[Dict[str, Any]], comments: List[Dict
     except Exception:
         analysis = {"error": "failed to parse output", "raw": text}
     return analysis
+

@@ -1,12 +1,15 @@
-from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel
-from ..models import UserCreate, UserBase, Token
-from .. import database
-from ..utils import hash_password, verify_password
-import uuid
 import os
+import uuid
 import jwt
 from datetime import datetime, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel
+
+from .. import database
+from ..models import Token, UserCreate
+from ..utils import hash_password, verify_password
 
 router = APIRouter()
 
@@ -36,15 +39,15 @@ class LoginData(BaseModel):
 
 @router.post("/signup")
 async def signup(user: UserCreate):
-    # check if email exists
     existing = await database.db.users.find_one({"email": user.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+
     user_dict = user.dict()
     user_dict["password_hash"] = hash_password(user_dict.pop("password"))
     user_dict["user_id"] = str(uuid.uuid4())
-    from datetime import datetime
     user_dict["created_at"] = datetime.utcnow()
+
     await database.db.users.insert_one(user_dict)
     return {"message": "user created"}
 
@@ -54,37 +57,39 @@ async def login(data: LoginData):
     user = await database.db.users.find_one({"email": data.email})
     if not user or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+
     access_token = create_access_token(user_id=user["user_id"])
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-from fastapi import Header
-
-
-async def get_current_user(authorization: str | None = Header(None)):
-    # expect header "Authorization: Bearer <token>"
+async def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     token = authorization.split(" ", 1)[1]
     data = decode_access_token(token)
     user_id = data.get("user_id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     user = await database.db.users.find_one({"user_id": user_id})
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
     return user
 
 
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
     if user:
-        return {"email": user["email"], "name": user["name"], "user_id": user["user_id"]}
+        return {
+            "email": user["email"],
+            "name": user["name"],
+            "user_id": user["user_id"],
+        }
     raise HTTPException(status_code=401)
 
 
-# logout endpoint is effectively a no-op with JWT (client just discards token)
 @router.post("/logout")
 async def logout():
     return {"message": "logged out"}
-
