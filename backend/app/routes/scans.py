@@ -56,18 +56,22 @@ async def run_scan(id: str, user=Depends(get_current_user)):
             detail=f"No posts found for r/{subreddit}. Check subreddit name or try again later.",
         )
 
-    comments: List[Dict[str, Any]] = []
-    for p in posts[:5]:
-        pid = p.get("id") or p.get("data", {}).get("id")
-        if pid:
-            try:
-                comments += await services.fetch_comments_for_post(pid, limit=20)
-            except Exception:
-                # Comments are best effort, don't fail whole scan.
-                pass
+    try:
+        comments = await services.sample_comments_for_posts(
+            posts,
+            max_posts=services.TOP_POSTS_FOR_COMMENTS,
+            max_comments_per_post=services.MAX_COMMENTS_PER_POST,
+        )
+    except Exception:
+        comments = []
 
     try:
-        analysis = await services.analyze_posts_with_ai(posts, comments)
+        analysis = await services.analyze_posts_with_ai(
+            posts,
+            comments,
+            game_name=str(game.get("name", "") or ""),
+            keywords=str(game.get("keywords", "") or ""),
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
@@ -121,4 +125,3 @@ async def latest_result_detail(id: str, user=Depends(get_current_user)):
     if not r:
         raise HTTPException(status_code=404, detail="No scan results yet")
     return _scan_detail_out_from_doc(r)
-

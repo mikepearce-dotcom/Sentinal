@@ -1,4 +1,3 @@
-import pytest
 from app import services
 
 
@@ -9,10 +8,18 @@ def test_scan_endpoint(client, monkeypatch):
     token = resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    # patch external service calls to return predictable data
-    monkeypatch.setattr(services, "fetch_reddit_posts", lambda subreddit, limit=100: [{"id": "1", "title": "post1"}])
-    monkeypatch.setattr(services, "fetch_comments_for_post", lambda pid, limit=20: [{"body": "comment"}])
-    monkeypatch.setattr(services, "analyze_posts_with_ai", lambda posts, comments: {"sentiment_label": "positive"})
+    async def fake_fetch_posts(subreddit, limit=100):
+        return [{"id": "1", "title": "post1", "score": 10, "num_comments": 2, "selftext": "content"}]
+
+    async def fake_sample_comments(posts, max_posts=15, max_comments_per_post=10):
+        return [{"body": "comment", "source_post_id": "1"}]
+
+    async def fake_analyze(posts, comments, game_name="", keywords=""):
+        return {"sentiment_label": "Positive", "themes": [], "pain_points": [], "wins": []}
+
+    monkeypatch.setattr(services, "fetch_reddit_posts", fake_fetch_posts)
+    monkeypatch.setattr(services, "sample_comments_for_posts", fake_sample_comments)
+    monkeypatch.setattr(services, "analyze_posts_with_ai", fake_analyze)
 
     # add a game
     r = client.post("/api/games", json={"name": "ScanGame", "subreddit": "scan"}, headers=headers)
@@ -28,4 +35,4 @@ def test_scan_endpoint(client, monkeypatch):
     # verify results stored
     r = client.get(f"/api/games/{gid}/latest-result", headers=headers)
     assert r.status_code == 200
-    assert r.json()["analysis"]["sentiment_label"] == "positive"
+    assert r.json()["analysis"]["sentiment_label"] == "Positive"

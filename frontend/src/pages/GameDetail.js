@@ -47,6 +47,7 @@ const normalizeListEntry = (entry) => {
     if (typeof entry.title === 'string') return entry.title;
     if (typeof entry.point === 'string') return entry.point;
     if (typeof entry.summary === 'string') return entry.summary;
+    if (typeof entry.text === 'string') return entry.text;
     return JSON.stringify(entry);
   }
   return String(entry);
@@ -581,6 +582,3 @@ const GameDetail = () => {
 };
 
 export default GameDetail;
-
-
-
