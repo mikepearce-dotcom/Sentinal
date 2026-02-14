@@ -1,3 +1,105 @@
+@import url("https://fonts.googleapis.com/css2?family=Chivo:wght@300;400;700;900&family=JetBrains+Mono:wght@400;500&family=Manrope:wght@300;400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --background: #09090b;
+  --surface: #121214;
+  --surface-highlight: #1c1c1f;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --primary: #d3f34b;
+  --primary-foreground: #000000;
+  --secondary: #ffffff;
+  --muted: #71717a;
+  --success: #00ff94;
+  --warning: #fcee0a;
+  --error: #ff003c;
+  --info: #00e5ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--background);
+  color: #fff;
+  font-family: "Manrope", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-heading {
+  font-family: "Chivo", sans-serif;
+}
+
+.font-mono {
+  font-family: "JetBrains Mono", monospace;
+}
+
+.hero-glow {
+  background: radial-gradient(circle at 50% 0%, rgba(211, 243, 75, 0.15), transparent 60%);
+}
+
+.card-glass {
+  background: rgba(18, 18, 20, 0.7);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.card-hover {
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  transform: skewX(-10deg);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-primary:hover {
+  transform: skewX(-10deg) translateY(-2px);
+  box-shadow: 0 0 20px rgba(211, 243, 75, 0.35);
+}
+
+.btn-primary span {
+  display: inline-block;
+  transform: skewX(10deg);
+}
+
+input:focus,
+textarea:focus,
+button:focus-visible {
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}

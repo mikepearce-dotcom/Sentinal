@@ -1,4 +1,4 @@
-import React, { useState, useContext } from 'react';
+import React, { useContext, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 
@@ -25,56 +25,70 @@ const Signup = () => {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState(null);
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError(null);
+    setError('');
+    setSubmitting(true);
 
     try {
       await signup(email, name, password);
     } catch (err) {
       setError(getErrorMessage(err));
+    } finally {
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="max-w-md mx-auto p-4">
-      <h2 className="text-2xl mb-4">Sign Up</h2>
-      {error && <p className="text-red-500 mb-2">{error}</p>}
-      <form onSubmit={handleSubmit} className="space-y-2">
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full p-2 bg-gray-800 rounded"
-          required
-        />
-        <input
-          type="text"
-          placeholder="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="w-full p-2 bg-gray-800 rounded"
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full p-2 bg-gray-800 rounded"
-          required
-        />
-        <button className="w-full p-2 bg-green-500 rounded">Sign Up</button>
-      </form>
-      <p className="text-sm text-gray-300 mt-4">
-        Already have an account?{' '}
-        <Link to="/login" className="text-green-400 hover:underline">
-          Log in
-        </Link>
-      </p>
+    <div className="min-h-screen bg-[#09090b] hero-glow px-6 py-12 flex items-center justify-center">
+      <div className="w-full max-w-md card-glass p-8">
+        <p className="font-mono text-xs text-[#D3F34B] tracking-widest uppercase">Sentient Tracker</p>
+        <h1 className="font-heading text-3xl font-black mt-3">Create Account</h1>
+        <p className="text-zinc-400 mt-2 text-sm">Start tracking game sentiment in minutes.</p>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-3">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full p-3 bg-black/40 border border-white/10 rounded"
+            required
+          />
+          <input
+            type="text"
+            placeholder="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full p-3 bg-black/40 border border-white/10 rounded"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full p-3 bg-black/40 border border-white/10 rounded"
+            required
+            minLength={6}
+          />
+          <button type="submit" disabled={submitting} className="btn-primary w-full py-3 disabled:opacity-60">
+            <span>{submitting ? 'CREATING ACCOUNT...' : 'SIGN UP'}</span>
+          </button>
+        </form>
+
+        {error ? <p className="text-red-400 text-sm mt-4">{error}</p> : null}
+
+        <p className="text-sm text-zinc-400 mt-6">
+          Already have an account?{' '}
+          <Link to="/login" className="text-[#D3F34B] hover:underline">
+            Log in
+          </Link>
+        </p>
+      </div>
     </div>
   );
 };

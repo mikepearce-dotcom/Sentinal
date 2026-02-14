@@ -4,33 +4,36 @@ import { AuthProvider, AuthContext } from './context/AuthContext';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
+import GameDetail from './pages/GameDetail';
+
+function AppRoutes() {
+  const { user } = useContext(AuthContext);
+
+  return (
+    <Routes>
+      <Route path="/" element={user ? <Dashboard /> : <Navigate to="/login" />} />
+      <Route path="/games/:id" element={user ? <GameDetail /> : <Navigate to="/login" />} />
+      <Route path="/login" element={!user ? <Login /> : <Navigate to="/" />} />
+      <Route path="/signup" element={!user ? <Signup /> : <Navigate to="/" />} />
+      <Route path="*" element={<Navigate to={user ? '/' : '/login'} />} />
+    </Routes>
+  );
+}
 
 function App() {
-  const { user } = useContext(AuthContext);
   return (
-    <div className="bg-[#09090b] min-h-screen text-white">
+    <div className="min-h-screen bg-[#09090b] text-white">
       <Router>
-        <Routes>
-          <Route
-            path="/"
-            element={user ? <Dashboard /> : <Navigate to="/login" />}
-          />
-          <Route
-            path="/login"
-            element={!user ? <Login /> : <Navigate to="/" />}
-          />
-          <Route
-            path="/signup"
-            element={!user ? <Signup /> : <Navigate to="/" />}
-          />
-        </Routes>
+        <AppRoutes />
       </Router>
     </div>
   );
 }
 
-export default () => (
-  <AuthProvider>
-    <App />
-  </AuthProvider>
-);
+export default function RootApp() {
+  return (
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  );
+}
