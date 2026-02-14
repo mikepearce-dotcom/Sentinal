@@ -55,8 +55,19 @@ class ScanResultOut(BaseModel):
     id: str
     created_at: datetime
     analysis: dict
+    posts_count: int = 0
+    comments_count: int = 0
+
+
+class ScanResultDetailOut(BaseModel):
+    id: str
+    created_at: datetime
+    analysis: dict
+    posts: List[dict]
+    comments: List[dict]
 
 
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+

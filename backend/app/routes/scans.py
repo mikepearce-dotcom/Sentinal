@@ -5,17 +5,35 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import database, services
-from ..models import ScanResultOut
+from ..models import ScanResultDetailOut, ScanResultOut
 from .auth import get_current_user
 
 router = APIRouter()
 
 
+def _safe_list(value: Any) -> List[Dict[str, Any]]:
+    return value if isinstance(value, list) else []
+
+
 def _scan_out_from_doc(doc: Dict[str, Any]) -> ScanResultOut:
+    posts = _safe_list(doc.get("posts"))
+    comments = _safe_list(doc.get("comments"))
     return ScanResultOut(
         id=str(doc.get("_id") or doc.get("id")),
         created_at=doc.get("created_at"),
         analysis=doc.get("analysis") or {},
+        posts_count=len(posts),
+        comments_count=len(comments),
+    )
+
+
+def _scan_detail_out_from_doc(doc: Dict[str, Any]) -> ScanResultDetailOut:
+    return ScanResultDetailOut(
+        id=str(doc.get("_id") or doc.get("id")),
+        created_at=doc.get("created_at"),
+        analysis=doc.get("analysis") or {},
+        posts=_safe_list(doc.get("posts")),
+        comments=_safe_list(doc.get("comments")),
     )
 
 
@@ -91,3 +109,16 @@ async def latest_result(id: str, user=Depends(get_current_user)):
     if not r:
         raise HTTPException(status_code=404)
     return _scan_out_from_doc(r)
+
+
+@router.get("/{id}/latest-result-detail", response_model=ScanResultDetailOut)
+async def latest_result_detail(id: str, user=Depends(get_current_user)):
+    game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    r = await database.db.scan_results.find_one({"game_id": id}, sort=[("created_at", -1)])
+    if not r:
+        raise HTTPException(status_code=404, detail="No scan results yet")
+    return _scan_detail_out_from_doc(r)
+
