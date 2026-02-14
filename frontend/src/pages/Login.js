@@ -1,5 +1,24 @@
 import React, { useState, useContext } from 'react';
+import { Link } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
+
+const getErrorMessage = (err) => {
+  const detail = err?.response?.data?.detail;
+
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item?.msg || 'Invalid input').join(', ');
+  }
+
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+
+  if (!err?.response) {
+    return 'Unable to reach backend. Check REACT_APP_BACKEND_URL and backend health.';
+  }
+
+  return 'Login failed. Please try again.';
+};
 
 const Login = () => {
   const { login } = useContext(AuthContext);
@@ -9,17 +28,19 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError(null);
+
     try {
       await login(email, password);
     } catch (err) {
-      setError('Invalid credentials');
+      setError(getErrorMessage(err));
     }
   };
 
   return (
     <div className="max-w-md mx-auto p-4">
       <h2 className="text-2xl mb-4">Log In</h2>
-      {error && <p className="text-red-500">{error}</p>}
+      {error && <p className="text-red-500 mb-2">{error}</p>}
       <form onSubmit={handleSubmit} className="space-y-2">
         <input
           type="email"
@@ -27,6 +48,7 @@ const Login = () => {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           className="w-full p-2 bg-gray-800 rounded"
+          required
         />
         <input
           type="password"
@@ -34,9 +56,16 @@ const Login = () => {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           className="w-full p-2 bg-gray-800 rounded"
+          required
         />
         <button className="w-full p-2 bg-green-500 rounded">Log In</button>
       </form>
+      <p className="text-sm text-gray-300 mt-4">
+        Need an account?{' '}
+        <Link to="/signup" className="text-green-400 hover:underline">
+          Sign up
+        </Link>
+      </p>
     </div>
   );
 };
