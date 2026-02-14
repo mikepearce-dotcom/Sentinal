@@ -1,35 +1,45 @@
 from os import environ
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import close_mongo_connection, connect_to_mongo
 from .routes import auth, games, scans
 
-
 app = FastAPI(title="Sentient Tracker API")
 
 
-def _parse_cors_origins(raw_value: str) -> list[str]:
-    origins = []
+def _parse_cors_origins(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+
+    origins: list[str] = []
     for item in raw_value.split(","):
         origin = item.strip().strip('"').strip("'").rstrip("/")
-        if origin:
+        if origin and origin not in origins:
             origins.append(origin)
     return origins
 
 
-origins = _parse_cors_origins(environ.get("CORS_ORIGINS", ""))
-origin_regex = environ.get("CORS_ORIGIN_REGEX", "").strip() or None
+configured_origins = _parse_cors_origins(environ.get("CORS_ORIGINS"))
+default_origins = [
+    "http://localhost:3000",
+    "https://noble-radiance-production.up.railway.app",
+]
+allow_origins = configured_origins or default_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins or ["*"],
-    allow_origin_regex=origin_regex,
+    allow_origins=allow_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.options("/{path:path}", include_in_schema=False)
+async def cors_preflight(path: str):
+    return Response(status_code=204)
 
 
 @app.get("/health")
