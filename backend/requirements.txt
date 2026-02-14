@@ -9,3 +9,5 @@ httpx
 pyjwt
 pytest
 pytest-asyncio
+
+openai==0.28.1

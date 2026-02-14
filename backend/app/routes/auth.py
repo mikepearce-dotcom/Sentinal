@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from ..models import UserCreate, UserBase, Token
-from ..database import db
+from .. import database
 from ..utils import hash_password, verify_password
 import uuid
 import os
@@ -37,7 +37,7 @@ class LoginData(BaseModel):
 @router.post("/signup")
 async def signup(user: UserCreate):
     # check if email exists
-    existing = await db.users.find_one({"email": user.email})
+    existing = await database.db.users.find_one({"email": user.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     user_dict = user.dict()
@@ -45,13 +45,13 @@ async def signup(user: UserCreate):
     user_dict["user_id"] = str(uuid.uuid4())
     from datetime import datetime
     user_dict["created_at"] = datetime.utcnow()
-    await db.users.insert_one(user_dict)
+    await database.db.users.insert_one(user_dict)
     return {"message": "user created"}
 
 
 @router.post("/login", response_model=Token)
 async def login(data: LoginData):
-    user = await db.users.find_one({"email": data.email})
+    user = await database.db.users.find_one({"email": data.email})
     if not user or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     access_token = create_access_token(user_id=user["user_id"])
@@ -70,7 +70,7 @@ async def get_current_user(authorization: str | None = Header(None)):
     user_id = data.get("user_id")
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    user = await db.users.find_one({"user_id": user_id})
+    user = await database.db.users.find_one({"user_id": user_id})
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return user
@@ -87,3 +87,4 @@ async def me(user=Depends(get_current_user)):
 @router.post("/logout")
 async def logout():
     return {"message": "logged out"}
+
