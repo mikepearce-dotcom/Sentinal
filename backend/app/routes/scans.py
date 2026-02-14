@@ -1,28 +1,34 @@
-from fastapi import APIRouter, HTTPException, Depends
-from .. import database
-from ..models import ScanResultOut
-from typing import List
 from datetime import datetime
+from typing import Any, Dict, List
 import uuid
 
-from .. import services
+from fastapi import APIRouter, Depends, HTTPException
+
+from .. import database, services
+from ..models import ScanResultOut
+from .auth import get_current_user
 
 router = APIRouter()
 
-# reuse auth dependency
-from .auth import get_current_user
+
+def _scan_out_from_doc(doc: Dict[str, Any]) -> ScanResultOut:
+    return ScanResultOut(
+        id=str(doc.get("_id") or doc.get("id")),
+        created_at=doc.get("created_at"),
+        analysis=doc.get("analysis") or {},
+    )
 
 
 @router.post("/{id}/scan")
 async def run_scan(id: str, user=Depends(get_current_user)):
-    # validate game belongs to user
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+
     subreddit = game.get("subreddit")
     posts = await services.fetch_reddit_posts(subreddit, limit=100)
-    comments = []
-    # attempt to fetch comments for each post (limiting to first 5 posts)
+    comments: List[Dict[str, Any]] = []
+
     for p in posts[:5]:
         pid = p.get("id") or p.get("data", {}).get("id")
         if pid:
@@ -40,23 +46,31 @@ async def run_scan(id: str, user=Depends(get_current_user)):
         "comments": comments,
         "analysis": analysis,
     }
+
     await database.db.scan_results.insert_one(result)
     return {"message": "scan complete", "result_id": result["_id"]}
 
 
 @router.get("/{id}/results", response_model=List[ScanResultOut])
 async def list_results(id: str, user=Depends(get_current_user)):
-    cursor = database.db.scan_results.find({"game_id": id})
-    results = []
+    game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    cursor = database.db.scan_results.find({"game_id": id}).sort("created_at", -1)
+    results: List[ScanResultOut] = []
     async for r in cursor:
-        results.append(ScanResultOut(**r))
+        results.append(_scan_out_from_doc(r))
     return results
 
 
 @router.get("/{id}/latest-result", response_model=ScanResultOut)
 async def latest_result(id: str, user=Depends(get_current_user)):
+    game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
     r = await database.db.scan_results.find_one({"game_id": id}, sort=[("created_at", -1)])
     if not r:
         raise HTTPException(status_code=404)
-    return ScanResultOut(**r)
-
+    return _scan_out_from_doc(r)
