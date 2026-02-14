@@ -1,0 +1,121 @@
+# Sentient Tracker - Specification Document
+
+## 1. Overview
+Sentient Tracker is a web application for game developers and community managers to monitor and analyze public sentiment on Reddit about specific games. Users can search or track games by subreddit; the system fetches recent posts, analyzes them using an AI model, and displays metrics, themes, pain points, and wins. The focus is a clean, dark cyberpunk-themed UI suitable for dashboard use.
+
+### 1.1 Goals
+- Enable users to add/edit/delete games they wish to track
+- Automatically fetch Reddit posts from a public data mirror (
+  Arctic Shift API
+  )
+- Perform sentiment and thematic analysis using OpenAI GPT-4o-mini
+- Store user accounts, game metadata, and scan results in a database
+- Hostable on modern cloud platforms (e.g., Railway)
+- Simple email/password authentication
+
+## 2. Architecture
+
+### 2.1 Frontend
+- React (create-react-app / craco) using TailwindCSS and Shadcn UI
+- Routes: login/signup, dashboard, game detail, account settings
+- Axios for API communication; intercept requests to add session token
+- State management with React context hooks
+- Styling: dark theme (#09090b background, neon accents #D3F34B), mobile responsive, cyberpunk typography
+
+### 2.2 Backend
+- Python FastAPI application
+- MongoDB for persistent storage (via Motor async driver)
+- Dependency injection for user authentication
+- API endpoints prefixed with `/api`
+- Uses environment variables to configure database, OpenAI key, CORS origins
+- Dockerfile provided for containerized deployment
+
+### 2.3 Database Schema
+- `users` collection:
+  - `user_id` (string, unique)
+  - `email` (string)
+  - `name` (string)
+  - `password_hash` (string)
+  - `auth_provider` fixed to "email"
+  - `created_at` (datetime)
+
+- `tracked_games` collection:
+  - `id` (uuid string)
+  - `user_id` (string, references users)
+  - `name` (string)
+  - `subreddit` (string normalized)
+  - `keywords` (optional string)
+  - `created_at` (datetime)
+
+- `scan_results` collection:
+  - `id` (uuid)
+  - `game_id` (string)
+  - `created_at` (datetime)
+  - `posts` (array of post objects)
+  - `comments` (array)
+  - `analysis` (object containing sentiment_label, sentiment_summary, themes, pain_points, wins)
+
+## 3. Data Fetching and Analysis
+
+### 3.1 Reddit Data Source
+- Arctic Shift API (https://arctic-shift.photon-reddit.com)
+- Public mirror of Reddit posts
+- We request up to 500 posts with time windows, filter by quality, apply diversity/recency rules, then select top ~100 posts
+- Comments fetched separately for top posts
+- Caching (in-memory, TTL 10 minutes) plus throttle (30 seconds per subreddit)
+
+### 3.2 AI Analysis
+- OpenAI GPT-4o-mini via official `openai` Python package
+- Prompt construction: list posts and comment samples, instruct JSON output with sentiment, themes, 5 pain points & wins (with evidence links)
+- The function `analyze_posts_with_ai` handles API call and response normalization
+- API key from environment variable `OPENAI_API_KEY`
+
+## 4. API Endpoints
+
+### Authentication
+- `POST /api/auth/signup` — register new user (email/password)
+- `POST /api/auth/login` — login, returns session token
+- `GET /api/auth/me` — get current user's info
+- `POST /api/auth/logout` — clear session
+
+### Games
+- `GET /api/games` — list user's games
+- `POST /api/games` — add a new tracked game
+- `GET /api/games/{id}` — retrieve a single game
+- `PUT /api/games/{id}` — update game details
+- `DELETE /api/games/{id}` — remove game
+
+### Scans
+- `POST /api/games/{id}/scan` — perform a scan (fetch posts + AI analysis)
+- `GET /api/games/{id}/results` — list all scan results for game
+- `GET /api/games/{id}/latest-result` — fetch most recent scan
+
+## 5. Styling and Copy
+
+### Theme
+- Dark base: #09090b or #121214
+- Accent neon green: #D3F34B
+- Fonts: Inter for body, custom cyberpunk headings
+- Use Shadcn UI components with minimal overrides
+
+### Copy Guidelines
+- Action buttons: "Add Game", "Run Scan", "Delete"
+- Success toasts: "Game added successfully", "Scan complete" 
+- Error messages: "Failed to load tracked games", "Invalid email or password"
+- Onboarding: "Track community sentiment across your favorite games."
+
+## 6. Deployment
+- Dockerfile provided for container build
+- Railway configuration (Docker builder or Procfile approach)
+- Environment variables: `MONGO_URL`, `DB_NAME`, `OPENAI_API_KEY`, `CORS_ORIGINS`, `REACT_APP_BACKEND_URL` (frontend)
+- Use MongoDB plugin or Atlas
+
+## 7. Future Enhancements
+- Add password reset flow
+- Improve analysis model or provider
+- Abstract data source to swap Arctic Shift
+- Use secure HTTP-only cookies instead of localStorage for session tokens
+
+---
+
+This specification treats Sentient Tracker as a standalone web app with clear API, data sources, storage, and design guidelines—independent of any previous build process.
