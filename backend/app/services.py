@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -44,6 +45,44 @@ def _extract_error_detail(resp: httpx.Response) -> str:
     except Exception:
         text = (resp.text or "").strip()
         return text[:300] if text else ""
+
+
+def _extract_json_payload(text: str) -> Dict[str, Any] | None:
+    content = (text or "").strip()
+    if not content:
+        return None
+
+    # direct parse first
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    # strip fenced markdown blocks like ```json ... ```
+    fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", content, re.IGNORECASE | re.DOTALL)
+    if fence_match:
+        fenced_body = fence_match.group(1).strip()
+        try:
+            parsed = json.loads(fenced_body)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # fallback: extract first JSON object-like block
+    object_match = re.search(r"\{.*\}", content, re.DOTALL)
+    if object_match:
+        candidate = object_match.group(0)
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    return None
 
 
 async def fetch_reddit_posts(subreddit: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -209,11 +248,9 @@ async def analyze_posts_with_ai(posts: List[Dict[str, Any]], comments: List[Dict
         max_tokens=1000,
     )
 
-    text = response.choices[0].message.content
-    try:
-        import json
+    text = response.choices[0].message.content or ""
+    parsed = _extract_json_payload(text)
+    if parsed is not None:
+        return parsed
 
-        analysis = json.loads(text)
-    except Exception:
-        analysis = {"error": "failed to parse output", "raw": text}
-    return analysis
+    return {"error": "failed to parse output", "raw": text}
