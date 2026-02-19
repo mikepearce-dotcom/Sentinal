@@ -3,12 +3,20 @@ from typing import Any, Dict, List
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from .. import database, services
 from ..models import ScanResultDetailOut, ScanResultOut
 from .auth import get_current_user
 
 router = APIRouter()
+
+
+class MultiScanRequest(BaseModel):
+    subreddits: List[str] = Field(default_factory=list, min_items=1, max_items=5)
+    game_name: str = ""
+    keywords: str = ""
+    include_breakdown: bool = True
 
 
 def _safe_list(value: Any) -> List[Dict[str, Any]]:
@@ -35,6 +43,32 @@ def _scan_detail_out_from_doc(doc: Dict[str, Any]) -> ScanResultDetailOut:
         posts=_safe_list(doc.get("posts")),
         comments=_safe_list(doc.get("comments")),
     )
+
+
+@router.post("/multi-scan")
+async def run_multi_scan(payload: MultiScanRequest, user=Depends(get_current_user)):
+    if not payload.subreddits:
+        raise HTTPException(status_code=400, detail="At least one subreddit is required")
+
+    try:
+        result = await services.scan_multiple_subreddits(
+            subreddits=payload.subreddits,
+            game_name=str(payload.game_name or ""),
+            keywords=str(payload.keywords or ""),
+            include_breakdown=bool(payload.include_breakdown),
+        )
+    except RuntimeError as exc:
+        detail = str(exc)
+        lowered = detail.lower()
+        if "at least one valid subreddit" in lowered:
+            raise HTTPException(status_code=400, detail=detail)
+        if "no posts found" in lowered:
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=500, detail=detail)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Multi scan failed: {exc}")
+
+    return result
 
 
 @router.post("/{id}/scan")

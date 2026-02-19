@@ -15,6 +15,7 @@ COMMENT_FIELDS = "id,body,created_utc,score,author,parent_id"
 
 CACHE_TTL = 600  # 10 minutes
 DISCOVERY_CACHE_TTL = 24 * 60 * 60  # 24 hours
+MULTI_SCAN_CACHE_TTL = 10 * 60  # 10 minutes
 WINDOWS: List[Tuple[str, str]] = [("48h", "0h"), ("8d", "48h"), ("30d", "8d")]
 
 MAX_POSTS_FINAL = 100
@@ -25,6 +26,8 @@ DISCOVERY_MAX_RESULTS = 10
 DISCOVERY_MAX_CANDIDATES = 30
 DISCOVERY_SAMPLE_POSTS = 25
 DISCOVERY_OPENAI_TOP = 10
+MAX_MULTI_SUBREDDITS = 5
+BREAKDOWN_MAX_POSTS_PER_SUBREDDIT = 20
 
 TOP_POSTS_FOR_COMMENTS = 15
 MAX_COMMENTS_PER_POST = 10
@@ -35,6 +38,7 @@ COMMENT_FETCH_DELAY = 0.2
 _post_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _comments_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _discovery_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_multi_scan_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
 def _normalize_subreddit(value: str) -> str:
@@ -1157,4 +1161,331 @@ async def analyze_posts_with_ai(
         return {"error": "failed to parse output", "raw": text}
 
     return _normalize_analysis(parsed)
+
+
+
+def _normalize_subreddit_list(subreddits: List[str], max_items: int = MAX_MULTI_SUBREDDITS) -> List[str]:
+    unique: List[str] = []
+    seen = set()
+
+    for raw in subreddits:
+        normalized = _normalize_subreddit(str(raw or ""))
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(normalized)
+        if len(unique) >= max_items:
+            break
+
+    return unique
+
+
+def _build_multi_scan_cache_key(
+    subreddits: List[str],
+    game_name: str,
+    keywords: str,
+    include_breakdown: bool,
+) -> str:
+    payload = {
+        "subreddits": sorted([s.lower() for s in subreddits]),
+        "game_name": _normalize_game_lookup_key(game_name),
+        "keywords": " ".join(_tokenize_text(keywords)),
+        "include_breakdown": bool(include_breakdown),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _build_posts_by_subreddit(posts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for post in posts:
+        subreddit = _normalize_subreddit(str(post.get("subreddit", "") or ""))
+        if not subreddit:
+            continue
+        grouped.setdefault(subreddit, []).append(post)
+
+    for subreddit, subreddit_posts in list(grouped.items()):
+        grouped[subreddit] = sorted(subreddit_posts, key=_calculate_post_rank, reverse=True)[
+            :BREAKDOWN_MAX_POSTS_PER_SUBREDDIT
+        ]
+
+    return grouped
+
+
+def _build_breakdown_prompt(
+    posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
+    game_name: str,
+    keywords: str,
+) -> str:
+    sections: List[str] = []
+
+    for subreddit in sorted(posts_by_subreddit.keys()):
+        posts = posts_by_subreddit.get(subreddit, [])[:BREAKDOWN_MAX_POSTS_PER_SUBREDDIT]
+        lines = [f"SUBREDDIT: r/{subreddit}", f"POST_COUNT: {len(posts)}"]
+
+        for post in posts:
+            post_id = str(post.get("id") or "")
+            title = str(post.get("title", "") or "").strip()
+            selftext = str(post.get("selftext", "") or "").strip()
+            score = int(post.get("score", 0) or 0)
+            num_comments = int(post.get("num_comments", 0) or 0)
+
+            line = f"- [POST:{post_id}] [{score} pts, {num_comments} comments] {title}"
+            if selftext and selftext not in ("[removed]", "[deleted]"):
+                snippet = selftext.replace("\n", " ")[:500].strip()
+                if snippet:
+                    line += f"\n  Snippet: {snippet}"
+            lines.append(line)
+
+        sections.append("\n".join(lines))
+
+    keyword_note = f"\nKeywords to watch for: {keywords}" if keywords else ""
+
+    return f"""You are an expert gaming community analyst preparing a per-subreddit breakdown for "{game_name or 'Unknown Game'}".
+
+RULES:
+- Do NOT assume game genre, modes, platforms, monetisation, or mechanics unless directly present in the posts.
+- Use only evidence present in the provided posts.
+- Include evidence links using: https://www.reddit.com/comments/POST_ID/
+- Ensure each subreddit section includes at least 1-2 [POST:post_id] references across themes/pain points/wins.
+
+REQUIRED JSON OUTPUT:
+{{
+  "breakdown": [
+    {{
+      "subreddit": "name",
+      "sentiment_label": "Positive|Mixed|Negative",
+      "summary_bullets": ["...", "...", "..."],
+      "top_themes": ["Theme - specific explanation [POST:id]", "..."],
+      "top_pain_points": [{{"text": "...", "evidence": ["https://www.reddit.com/comments/POST_ID/"]}}],
+      "top_wins": [{{"text": "...", "evidence": ["https://www.reddit.com/comments/POST_ID/"]}}]
+    }}
+  ]
+}}
+
+Field constraints:
+- summary_bullets: max 3 bullets
+- top_themes: 3 to 5 items
+- top_pain_points: exactly 3 items
+- top_wins: exactly 3 items
+{keyword_note}
+
+SUBREDDIT DATA:
+{chr(10).join(sections)}
+
+Return valid JSON only. No markdown fences.
+"""
+
+
+def _normalize_summary_bullets(value: Any) -> List[str]:
+    if isinstance(value, list):
+        bullets = [str(item).strip() for item in value if str(item).strip()]
+        return bullets[:3]
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        segments = [seg.strip() for seg in re.split(r"[\n\r]+|\.\s+", text) if seg.strip()]
+        return segments[:3]
+
+    return []
+
+
+def _extract_post_ids(text: str) -> List[str]:
+    return re.findall(r"\[POST:([A-Za-z0-9_]+)\]", text or "")
+
+
+def _normalize_breakdown_items(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    items: List[Dict[str, Any]] = []
+    for raw_item in value:
+        if not isinstance(raw_item, dict):
+            continue
+
+        text = str(
+            raw_item.get("text")
+            or raw_item.get("summary")
+            or raw_item.get("point")
+            or raw_item.get("title")
+            or ""
+        ).strip()
+        if not text:
+            continue
+
+        evidence = _normalize_evidence_links(raw_item.get("evidence"))
+        if not evidence:
+            post_ids = _extract_post_ids(text)
+            for post_id in post_ids:
+                link = _format_permalink(post_id)
+                if link not in evidence:
+                    evidence.append(link)
+                if len(evidence) >= 2:
+                    break
+
+        items.append({"text": text, "evidence": evidence[:2]})
+
+    return items[:3]
+
+
+def _normalize_breakdown_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw_breakdown = payload.get("breakdown")
+    if not isinstance(raw_breakdown, list):
+        return {"breakdown": []}
+
+    normalized_rows: List[Dict[str, Any]] = []
+
+    for item in raw_breakdown:
+        if not isinstance(item, dict):
+            continue
+
+        subreddit = _normalize_subreddit(str(item.get("subreddit", "") or ""))
+        if not subreddit:
+            continue
+
+        sentiment_label = _normalize_sentiment_label(item.get("sentiment_label"))
+        if sentiment_label == "Unknown":
+            sentiment_label = "Mixed"
+
+        summary_bullets = _normalize_summary_bullets(item.get("summary_bullets"))
+        themes = _normalize_themes(item.get("top_themes"))[:5]
+        pain_points = _normalize_breakdown_items(item.get("top_pain_points"))
+        wins = _normalize_breakdown_items(item.get("top_wins"))
+
+        normalized_rows.append(
+            {
+                "subreddit": subreddit,
+                "sentiment_label": sentiment_label,
+                "summary_bullets": summary_bullets,
+                "top_themes": themes,
+                "top_pain_points": pain_points,
+                "top_wins": wins,
+            }
+        )
+
+    return {"breakdown": normalized_rows}
+
+
+async def analyze_subreddit_breakdown_with_ai(
+    posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
+    game_name: str = "",
+    keywords: str = "",
+) -> Dict[str, Any]:
+    if not posts_by_subreddit:
+        return {"breakdown": []}
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"error": "OpenAI API key not configured", "breakdown": []}
+
+    try:
+        import openai
+
+        openai.api_key = api_key
+        prompt = _build_breakdown_prompt(posts_by_subreddit, game_name=game_name, keywords=keywords)
+
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert gaming community analyst. "
+                        "Return valid JSON only and avoid unsupported assumptions."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=2000,
+        )
+
+        text = response.choices[0].message.content or ""
+        parsed = _extract_json_payload(text)
+        if parsed is None:
+            return {"error": "failed to parse output", "breakdown": []}
+
+        normalized = _normalize_breakdown_payload(parsed)
+        if not normalized.get("breakdown"):
+            return {"error": "empty breakdown output", "breakdown": []}
+
+        return normalized
+    except Exception as exc:
+        return {"error": str(exc), "breakdown": []}
+
+
+async def scan_multiple_subreddits(
+    subreddits: List[str],
+    game_name: str = "",
+    keywords: str = "",
+    include_breakdown: bool = True,
+) -> Dict[str, Any]:
+    normalized_subreddits = _normalize_subreddit_list(subreddits, max_items=MAX_MULTI_SUBREDDITS)
+    if not normalized_subreddits:
+        raise RuntimeError("At least one valid subreddit is required")
+
+    cache_key = _build_multi_scan_cache_key(
+        normalized_subreddits,
+        game_name=game_name,
+        keywords=keywords,
+        include_breakdown=include_breakdown,
+    )
+
+    now = time.time()
+    cached = _multi_scan_cache.get(cache_key)
+    if cached and now - cached[0] < MULTI_SCAN_CACHE_TTL:
+        return cached[1]
+
+    posts = await fetch_posts_for_subreddits(
+        normalized_subreddits,
+        per_sub_limit=80,
+        total_limit=150,
+    )
+    if not posts:
+        joined = ", ".join([f"r/{sub}" for sub in normalized_subreddits])
+        raise RuntimeError(f"No posts found for selected subreddits: {joined}")
+
+    try:
+        comments = await sample_comments_for_posts(
+            posts,
+            max_posts=TOP_POSTS_FOR_COMMENTS,
+            max_comments_per_post=MAX_COMMENTS_PER_POST,
+        )
+    except Exception:
+        comments = []
+
+    overall = await analyze_posts_with_ai(
+        posts,
+        comments,
+        game_name=game_name,
+        keywords=keywords,
+    )
+
+    posts_by_subreddit = _build_posts_by_subreddit(posts)
+    subreddit_breakdown: Dict[str, Any] = {"breakdown": []}
+
+    if include_breakdown:
+        subreddit_breakdown = await analyze_subreddit_breakdown_with_ai(
+            posts_by_subreddit,
+            game_name=game_name,
+            keywords=keywords,
+        )
+
+    result = {
+        "overall": overall,
+        "meta": {
+            "subreddits": normalized_subreddits,
+            "posts_analysed": len(posts),
+            "comments_sampled": len(comments),
+            "last_scanned": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        },
+        "subreddit_breakdown": subreddit_breakdown,
+    }
+
+    _multi_scan_cache[cache_key] = (now, result)
+    return result
 
