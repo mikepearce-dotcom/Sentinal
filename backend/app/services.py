@@ -14,12 +14,17 @@ POST_FIELDS = "id,title,selftext,created_utc,score,num_comments,author,subreddit
 COMMENT_FIELDS = "id,body,created_utc,score,author,parent_id"
 
 CACHE_TTL = 600  # 10 minutes
+DISCOVERY_CACHE_TTL = 24 * 60 * 60  # 24 hours
 WINDOWS: List[Tuple[str, str]] = [("48h", "0h"), ("8d", "48h"), ("30d", "8d")]
 
 MAX_POSTS_FINAL = 100
 MAX_POSTS_PER_AUTHOR = 3
 MAX_NO_COMMENT_POSTS = 20
 MIN_RECENT_POSTS = 20
+DISCOVERY_MAX_RESULTS = 10
+DISCOVERY_MAX_CANDIDATES = 30
+DISCOVERY_SAMPLE_POSTS = 25
+DISCOVERY_OPENAI_TOP = 10
 
 TOP_POSTS_FOR_COMMENTS = 15
 MAX_COMMENTS_PER_POST = 10
@@ -29,6 +34,7 @@ COMMENT_FETCH_DELAY = 0.2
 
 _post_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _comments_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_discovery_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
 
 def _normalize_subreddit(value: str) -> str:
@@ -59,6 +65,45 @@ def _extract_error_detail(resp: httpx.Response) -> str:
     except Exception:
         text = (resp.text or "").strip()
         return text[:300] if text else ""
+
+
+def _tokenize_text(value: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", (value or "").lower())
+
+
+def _normalize_game_lookup_key(game_name: str) -> str:
+    return " ".join(_tokenize_text(game_name))
+
+
+def _build_subreddit_prefixes(game_name: str) -> List[str]:
+    tokens = _tokenize_text(game_name)
+    if not tokens:
+        return []
+
+    prefixes: List[str] = []
+
+    def _add(term: str) -> None:
+        cleaned = re.sub(r"[^a-z0-9_]", "", (term or "").lower())
+        if len(cleaned) < 2:
+            return
+        if cleaned not in prefixes:
+            prefixes.append(cleaned)
+
+    _add("".join(tokens))
+    _add("_".join(tokens))
+
+    for token in tokens:
+        _add(token)
+        max_len = min(len(token), 8)
+        for length in range(3, max_len + 1):
+            _add(token[:length])
+
+    for span in (2, 3):
+        if len(tokens) >= span:
+            _add("".join(tokens[:span]))
+            _add("_".join(tokens[:span]))
+
+    return prefixes[:20]
 
 
 def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
@@ -359,6 +404,441 @@ async def fetch_reddit_posts(subreddit: str, limit: int = 100) -> List[Dict[str,
     final_posts = _apply_diversity_and_recency(high_signal, max_posts=target_limit)
     _post_cache[normalized] = (now, final_posts)
     return final_posts
+
+
+async def _search_subreddits_by_prefix(prefix: str, limit: int = 25) -> List[Dict[str, Any]]:
+    clean_prefix = re.sub(r"[^a-z0-9_]", "", (prefix or "").lower())
+    if len(clean_prefix) < 2:
+        return []
+
+    params = {
+        "subreddit_prefix": clean_prefix,
+        "limit": max(1, min(limit, 1000)),
+    }
+    headers = {
+        "User-Agent": "SentientTracker/1.0",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        resp = await client.get(f"{ARCTIC_SHIFT_BASE}/api/subreddits/search", params=params, headers=headers)
+
+    if resp.status_code in (400, 404):
+        return []
+
+    if resp.status_code != 200:
+        detail = _extract_error_detail(resp)
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Arctic Shift subreddit search failed (HTTP {resp.status_code}){suffix}")
+
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise RuntimeError("Invalid JSON response from Arctic Shift subreddit search") from exc
+
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+
+        subreddit = _normalize_subreddit(
+            str(item.get("subreddit") or item.get("display_name") or item.get("name") or "")
+        )
+        if not subreddit:
+            continue
+
+        subscribers_raw = item.get("subscribers", 0)
+        try:
+            subscribers = int(subscribers_raw or 0)
+        except Exception:
+            subscribers = 0
+
+        title = str(item.get("title", "") or "")
+        description = str(item.get("public_description") or item.get("description") or "")
+
+        candidates.append(
+            {
+                "subreddit": subreddit,
+                "subscribers": subscribers,
+                "title": title,
+                "description": description,
+            }
+        )
+
+    return candidates
+
+
+def _extract_signal_tokens(game_name: str) -> List[str]:
+    tokens = _tokenize_text(game_name)
+    if not tokens:
+        return []
+
+    signal_tokens = [t for t in tokens if len(t) >= 3]
+    return signal_tokens or tokens
+
+
+def _name_similarity_score(game_tokens: List[str], candidate: Dict[str, Any]) -> float:
+    if not game_tokens:
+        return 0.0
+
+    candidate_blob = " ".join(
+        [
+            str(candidate.get("subreddit", "") or ""),
+            str(candidate.get("title", "") or ""),
+            str(candidate.get("description", "") or ""),
+        ]
+    )
+    candidate_tokens = set(_tokenize_text(candidate_blob))
+    if not candidate_tokens:
+        return 0.0
+
+    game_token_set = set(game_tokens)
+    overlap = len(game_token_set.intersection(candidate_tokens))
+    return overlap / float(len(game_token_set))
+
+
+def _content_relevance_score(game_tokens: List[str], posts: List[Dict[str, Any]]) -> float:
+    if not game_tokens or not posts:
+        return 0.0
+
+    game_token_set = set(game_tokens)
+    matches = 0
+    for post in posts:
+        title_tokens = set(_tokenize_text(str(post.get("title", "") or "")))
+        if title_tokens.intersection(game_token_set):
+            matches += 1
+
+    return matches / float(len(posts))
+
+
+def _build_discovery_reason(content_score: float, activity_score: float, name_score: float) -> str:
+    if content_score >= 0.5 and activity_score >= 1.5:
+        return "High content relevance and consistent discussion"
+    if name_score >= 0.5 and activity_score >= 1.0:
+        return "Name match with active engagement"
+    if content_score >= 0.35:
+        return "Frequent game mentions in recent posts"
+    if activity_score >= 2.0:
+        return "Active subreddit with ongoing discussions"
+    if name_score >= 0.35:
+        return "Strong name similarity to the game title"
+    return "Potential match based on available subreddit signals"
+
+
+async def _openai_rerank_subreddit_candidates(
+    game_name: str,
+    candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or not candidates:
+        return []
+
+    try:
+        import openai
+
+        openai.api_key = api_key
+
+        lines: List[str] = []
+        for index, candidate in enumerate(candidates, start=1):
+            subreddit = str(candidate.get("subreddit", "") or "")
+            subscribers = int(candidate.get("subscribers", 0) or 0)
+            sample_titles = candidate.get("_sample_titles") or []
+            if not isinstance(sample_titles, list):
+                sample_titles = []
+
+            lines.append(f"{index}. r/{subreddit} | subscribers={subscribers}")
+            for title in sample_titles[:3]:
+                lines.append(f"   - {str(title)}")
+
+        prompt = (
+            "You are selecting the best Reddit communities to scan for game feedback.\n"
+            f"Game name: {game_name}\n\n"
+            "Candidates:\n"
+            + "\n".join(lines)
+            + "\n\n"
+            "Return strict JSON in this shape only:\n"
+            '{"picks":[{"subreddit":"name","confidence":"High|Medium|Low","justification":"short reason"}]}'
+            "\nChoose 3 to 5 subreddits. Prefer communities that are clearly about the game and have current discussion signal."
+        )
+
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Return valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        text = response.choices[0].message.content or ""
+        parsed = _extract_json_payload(text)
+        if not parsed:
+            return []
+
+        picks = parsed.get("picks")
+        if not isinstance(picks, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in picks:
+            if not isinstance(item, dict):
+                continue
+            subreddit = _normalize_subreddit(str(item.get("subreddit", "") or ""))
+            if not subreddit:
+                continue
+            normalized.append(
+                {
+                    "subreddit": subreddit,
+                    "confidence": str(item.get("confidence", "") or "").strip(),
+                    "justification": str(
+                        item.get("justification") or item.get("reason") or ""
+                    ).strip(),
+                }
+            )
+
+        return normalized
+    except Exception as exc:
+        print(f"OpenAI subreddit rerank failed: {exc}")
+        return []
+
+
+def _apply_openai_rerank(
+    candidates: List[Dict[str, Any]],
+    picks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not candidates or not picks:
+        return candidates
+
+    by_subreddit = {str(c.get("subreddit", "")).lower(): dict(c) for c in candidates}
+    used = set()
+    ranked: List[Dict[str, Any]] = []
+
+    for rank, pick in enumerate(picks):
+        subreddit = _normalize_subreddit(str(pick.get("subreddit", "") or "")).lower()
+        if not subreddit or subreddit in used:
+            continue
+
+        candidate = by_subreddit.get(subreddit)
+        if not candidate:
+            continue
+
+        confidence = str(pick.get("confidence", "") or "").strip().lower()
+        justification = str(pick.get("justification", "") or "").strip()
+
+        bonus = 0.0
+        if confidence.startswith("high"):
+            bonus = 0.25
+        elif confidence.startswith("medium"):
+            bonus = 0.15
+        elif confidence.startswith("low"):
+            bonus = 0.05
+
+        candidate["score"] = round(float(candidate.get("score", 0.0)) + bonus, 4)
+        if justification:
+            suffix = "AI rerank"
+            if confidence:
+                suffix += f" ({confidence})"
+            candidate["reason"] = f"{candidate.get('reason', '')}; {suffix}: {justification}".strip("; ")
+
+        candidate["_ai_rank"] = rank
+        ranked.append(candidate)
+        used.add(subreddit)
+
+    for candidate in candidates:
+        sub = str(candidate.get("subreddit", "")).lower()
+        if sub in used:
+            continue
+        remaining = dict(candidate)
+        remaining["_ai_rank"] = 999
+        ranked.append(remaining)
+
+    ranked.sort(
+        key=lambda item: (
+            int(item.get("_ai_rank", 999)),
+            -float(item.get("score", 0.0)),
+            -int(item.get("subscribers", 0) or 0),
+        )
+    )
+
+    cleaned: List[Dict[str, Any]] = []
+    for item in ranked:
+        row = dict(item)
+        row.pop("_ai_rank", None)
+        cleaned.append(row)
+    return cleaned
+
+
+async def discover_subreddits_for_game(
+    game_name: str,
+    max_results: int = 5,
+) -> List[Dict[str, Any]]:
+    lookup_key = _normalize_game_lookup_key(game_name)
+    if not lookup_key:
+        return []
+
+    safe_max = max(1, min(max_results, DISCOVERY_MAX_RESULTS))
+
+    now = time.time()
+    cached = _discovery_cache.get(lookup_key)
+    if cached and now - cached[0] < DISCOVERY_CACHE_TTL:
+        return [dict(item) for item in cached[1][:safe_max]]
+
+    prefixes = _build_subreddit_prefixes(game_name)
+    if not prefixes:
+        _discovery_cache[lookup_key] = (now, [])
+        return []
+
+    candidate_map: Dict[str, Dict[str, Any]] = {}
+    for prefix in prefixes:
+        try:
+            candidates = await _search_subreddits_by_prefix(prefix, limit=25)
+        except Exception as exc:
+            print(f"Subreddit discovery prefix failed ({prefix}): {exc}")
+            continue
+
+        for candidate in candidates:
+            subreddit = str(candidate.get("subreddit", "") or "").lower()
+            if not subreddit:
+                continue
+
+            existing = candidate_map.get(subreddit)
+            if existing is None:
+                candidate_map[subreddit] = candidate
+                continue
+
+            if int(candidate.get("subscribers", 0) or 0) > int(existing.get("subscribers", 0) or 0):
+                candidate_map[subreddit] = candidate
+
+    if not candidate_map:
+        _discovery_cache[lookup_key] = (now, [])
+        return []
+
+    ranked_candidates = sorted(
+        candidate_map.values(),
+        key=lambda item: int(item.get("subscribers", 0) or 0),
+        reverse=True,
+    )[:DISCOVERY_MAX_CANDIDATES]
+
+    game_tokens = _extract_signal_tokens(game_name)
+    scored: List[Dict[str, Any]] = []
+
+    for candidate in ranked_candidates:
+        subreddit = str(candidate.get("subreddit", "") or "")
+        if not subreddit:
+            continue
+
+        try:
+            sampled_posts = await _fetch_posts_window(subreddit, after="30d", before="14d")
+        except Exception as exc:
+            print(f"Subreddit sample fetch failed ({subreddit}): {exc}")
+            sampled_posts = []
+
+        sampled_posts = sampled_posts[:DISCOVERY_SAMPLE_POSTS]
+        total_comments = sum(int(post.get("num_comments", 0) or 0) for post in sampled_posts)
+        total_score = sum(int(post.get("score", 0) or 0) for post in sampled_posts)
+
+        activity_score = math.log(1 + total_comments) + 0.5 * math.log(1 + total_score)
+        name_score = _name_similarity_score(game_tokens, candidate)
+        content_score = _content_relevance_score(game_tokens, sampled_posts)
+
+        combined_score = (0.45 * content_score) + (0.35 * activity_score) + (0.20 * name_score)
+        reason = _build_discovery_reason(content_score, activity_score, name_score)
+
+        scored.append(
+            {
+                "subreddit": subreddit,
+                "subscribers": int(candidate.get("subscribers", 0) or 0),
+                "score": round(combined_score, 4),
+                "reason": reason,
+                "_sample_titles": [str(post.get("title", "") or "") for post in sampled_posts[:3]],
+            }
+        )
+
+    if not scored:
+        _discovery_cache[lookup_key] = (now, [])
+        return []
+
+    deterministic = sorted(
+        scored,
+        key=lambda item: (float(item.get("score", 0.0)), int(item.get("subscribers", 0) or 0)),
+        reverse=True,
+    )
+
+    rerank_candidates = deterministic[:DISCOVERY_OPENAI_TOP]
+    picks = await _openai_rerank_subreddit_candidates(game_name, rerank_candidates)
+    reranked = _apply_openai_rerank(deterministic, picks) if picks else deterministic
+
+    cached_rows: List[Dict[str, Any]] = []
+    for item in reranked[:DISCOVERY_MAX_RESULTS]:
+        cached_rows.append(
+            {
+                "subreddit": str(item.get("subreddit", "") or ""),
+                "subscribers": int(item.get("subscribers", 0) or 0),
+                "score": float(item.get("score", 0.0) or 0.0),
+                "reason": str(item.get("reason", "") or ""),
+            }
+        )
+
+    _discovery_cache[lookup_key] = (now, cached_rows)
+    return [dict(item) for item in cached_rows[:safe_max]]
+
+
+async def fetch_posts_for_subreddits(
+    subreddits: List[str],
+    per_sub_limit: int = 80,
+    total_limit: int = 150,
+) -> List[Dict[str, Any]]:
+    if not subreddits:
+        return []
+
+    unique_subreddits: List[str] = []
+    seen = set()
+    for raw in subreddits:
+        normalized = _normalize_subreddit(str(raw or ""))
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_subreddits.append(normalized)
+
+    if not unique_subreddits:
+        return []
+
+    safe_per_sub_limit = max(1, min(per_sub_limit, MAX_POSTS_FINAL))
+    safe_total_limit = max(1, min(total_limit, 500))
+
+    tasks = [fetch_reddit_posts(subreddit, limit=safe_per_sub_limit) for subreddit in unique_subreddits]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    merged_by_id: Dict[str, Dict[str, Any]] = {}
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+
+        for post in result:
+            post_id = str(post.get("id") or "")
+            if not post_id:
+                continue
+
+            existing = merged_by_id.get(post_id)
+            if existing is None:
+                merged_by_id[post_id] = post
+                continue
+
+            if _calculate_post_rank(post) > _calculate_post_rank(existing):
+                merged_by_id[post_id] = post
+
+    if not merged_by_id:
+        return []
+
+    ranked_posts = sorted(merged_by_id.values(), key=_calculate_post_rank, reverse=True)
+    return ranked_posts[:safe_total_limit]
 
 
 async def fetch_comments_for_post(post_id: str, limit: int = 50) -> List[Dict[str, Any]]:

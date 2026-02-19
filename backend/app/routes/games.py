@@ -2,9 +2,9 @@ from datetime import datetime
 from typing import Any, Dict, List
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from .. import database
+from .. import database, services
 from ..models import Game, GameCreate
 from .auth import get_current_user
 
@@ -40,6 +40,23 @@ async def add_game(game: GameCreate, user=Depends(get_current_user)):
 
     await database.db.tracked_games.insert_one(doc)
     return _game_from_doc(doc)
+
+
+@router.get("/discover-subreddits")
+async def discover_subreddits(
+    game_name: str = Query(..., min_length=1),
+    max_results: int = Query(5, ge=1, le=10),
+    user=Depends(get_current_user),
+):
+    try:
+        results = await services.discover_subreddits_for_game(
+            game_name=game_name,
+            max_results=max_results,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to discover subreddits: {exc}")
+
+    return {"game_name": game_name, "results": results}
 
 
 @router.get("/{id}", response_model=Game)

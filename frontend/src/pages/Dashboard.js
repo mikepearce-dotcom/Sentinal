@@ -15,6 +15,10 @@ const Dashboard = () => {
   const [runningScanFor, setRunningScanFor] = useState('');
   const [deletingGameFor, setDeletingGameFor] = useState('');
   const [newGame, setNewGame] = useState({ name: '', subreddit: '', keywords: '' });
+  const [discoveringSubreddits, setDiscoveringSubreddits] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState('');
+  const [subredditSuggestions, setSubredditSuggestions] = useState([]);
+  const [lastDiscoveryGame, setLastDiscoveryGame] = useState('');
 
   const sortedGames = useMemo(() => {
     return [...games].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -39,25 +43,84 @@ const Dashboard = () => {
     loadGames();
   }, [loadGames]);
 
+  const discoverSubreddits = useCallback(
+    async (gameNameInput, options = {}) => {
+      const { autoSelectFirst = true } = options;
+      const gameName = (gameNameInput ?? newGame.name).trim();
+
+      if (!gameName) {
+        setDiscoveryError('Enter a game name to discover relevant subreddits.');
+        setSubredditSuggestions([]);
+        return [];
+      }
+
+      setDiscoveringSubreddits(true);
+      setDiscoveryError('');
+
+      try {
+        const resp = await api.get('/api/games/discover-subreddits', {
+          params: { game_name: gameName, max_results: 5 },
+        });
+
+        const results = Array.isArray(resp?.data?.results) ? resp.data.results : [];
+        setSubredditSuggestions(results);
+        setLastDiscoveryGame(gameName.toLowerCase());
+
+        if (autoSelectFirst && results.length > 0) {
+          const firstSubreddit = String(results[0]?.subreddit || '').trim();
+          if (firstSubreddit) {
+            setNewGame((prev) => {
+              if (prev.subreddit.trim()) {
+                return prev;
+              }
+              return { ...prev, subreddit: firstSubreddit };
+            });
+          }
+        }
+
+        if (results.length === 0) {
+          setDiscoveryError('No strong subreddit matches found. You can still enter one manually.');
+        }
+
+        return results;
+      } catch (err) {
+        const detail = err?.response?.data?.detail;
+        setDiscoveryError(typeof detail === 'string' ? detail : 'Failed to discover subreddits.');
+        setSubredditSuggestions([]);
+        return [];
+      } finally {
+        setDiscoveringSubreddits(false);
+      }
+    },
+    [newGame.name]
+  );
+
   const addGame = async (e) => {
     e.preventDefault();
     setFormError('');
 
-    if (!newGame.name.trim() || !newGame.subreddit.trim()) {
-      setFormError('Game name and subreddit are required.');
+    const gameName = newGame.name.trim();
+    const fallbackSubreddit = String(subredditSuggestions[0]?.subreddit || '').trim();
+    const chosenSubreddit = newGame.subreddit.trim() || fallbackSubreddit;
+
+    if (!gameName || !chosenSubreddit) {
+      setFormError('Game name and subreddit are required. Try discovery if you are unsure of the subreddit.');
       return;
     }
 
     setCreating(true);
     try {
       const payload = {
-        name: newGame.name.trim(),
-        subreddit: newGame.subreddit.trim().replace(/^r\//i, ''),
+        name: gameName,
+        subreddit: chosenSubreddit.replace(/^r\//i, ''),
         keywords: newGame.keywords.trim(),
       };
       const resp = await api.post('/api/games', payload);
       setGames((prev) => [resp.data, ...prev]);
       setNewGame({ name: '', subreddit: '', keywords: '' });
+      setSubredditSuggestions([]);
+      setDiscoveryError('');
+      setLastDiscoveryGame('');
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setFormError(typeof detail === 'string' ? detail : 'Failed to add game.');
@@ -135,12 +198,25 @@ const Dashboard = () => {
       <main className="max-w-6xl mx-auto px-6 md:px-10 py-8 space-y-8">
         <section className="card-glass p-6">
           <h2 className="font-heading text-xl font-bold mb-4">Add New Game</h2>
-          <form onSubmit={addGame} className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <form onSubmit={addGame} className="grid grid-cols-1 md:grid-cols-5 gap-3">
             <input
               type="text"
               placeholder="Game name"
               value={newGame.name}
-              onChange={(e) => setNewGame((prev) => ({ ...prev, name: e.target.value }))}
+              onChange={(e) => {
+                const nextName = e.target.value;
+                setNewGame((prev) => ({ ...prev, name: nextName }));
+                if (nextName.trim().toLowerCase() !== lastDiscoveryGame) {
+                  setSubredditSuggestions([]);
+                }
+                setDiscoveryError('');
+              }}
+              onBlur={() => {
+                const trimmedName = newGame.name.trim().toLowerCase();
+                if (!trimmedName) return;
+                if (trimmedName === lastDiscoveryGame) return;
+                discoverSubreddits(newGame.name, { autoSelectFirst: true });
+              }}
               className="md:col-span-1 w-full p-3 bg-black/40 border border-white/10 rounded text-white"
             />
             <input
@@ -158,6 +234,14 @@ const Dashboard = () => {
               className="md:col-span-1 w-full p-3 bg-black/40 border border-white/10 rounded text-white"
             />
             <button
+              type="button"
+              onClick={() => discoverSubreddits(newGame.name, { autoSelectFirst: true })}
+              disabled={discoveringSubreddits || !newGame.name.trim()}
+              className="md:col-span-1 px-4 py-3 border border-white/20 text-zinc-200 hover:border-white/40 disabled:opacity-60"
+            >
+              {discoveringSubreddits ? 'DISCOVERING...' : 'DISCOVER SUBREDDITS'}
+            </button>
+            <button
               type="submit"
               disabled={creating}
               className="btn-primary md:col-span-1 px-4 py-3 disabled:opacity-60"
@@ -165,6 +249,40 @@ const Dashboard = () => {
               <span>{creating ? 'ADDING...' : 'ADD GAME'}</span>
             </button>
           </form>
+
+          {subredditSuggestions.length > 0 ? (
+            <div className="mt-4 p-3 border border-white/10 rounded bg-black/30">
+              <p className="text-xs text-zinc-400 mb-2">Suggested subreddits</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {subredditSuggestions.map((item) => {
+                  const subreddit = String(item?.subreddit || '');
+                  const isSelected = newGame.subreddit.trim().toLowerCase() === subreddit.toLowerCase();
+                  const subscribers = Number(item?.subscribers || 0).toLocaleString();
+                  const scoreNumber = Number(item?.score);
+                  const scoreText = Number.isFinite(scoreNumber) ? scoreNumber.toFixed(2) : '--';
+
+                  return (
+                    <button
+                      key={`${subreddit}-${scoreText}`}
+                      type="button"
+                      onClick={() => setNewGame((prev) => ({ ...prev, subreddit }))}
+                      className={`text-left p-3 border rounded transition-colors ${
+                        isSelected
+                          ? 'border-[#D3F34B]/60 bg-[#D3F34B]/10 text-white'
+                          : 'border-white/10 bg-black/20 text-zinc-200 hover:border-white/30'
+                      }`}
+                    >
+                      <p className="font-semibold">r/{subreddit}</p>
+                      <p className="text-xs text-zinc-400 mt-1">{item?.reason || 'Relevant candidate for this game.'}</p>
+                      <p className="text-[11px] text-zinc-500 mt-2">{subscribers} members | score {scoreText}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {discoveryError ? <p className="text-sm text-amber-300 mt-3">{discoveryError}</p> : null}
           {formError ? <p className="text-sm text-red-400 mt-3">{formError}</p> : null}
         </section>
 
@@ -238,3 +356,4 @@ const Dashboard = () => {
 };
 
 export default Dashboard;
+
