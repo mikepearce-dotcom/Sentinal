@@ -420,6 +420,12 @@ const GameDetail = () => {
   const [scanning, setScanning] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pageError, setPageError] = useState('');
+  const [selectedSubreddits, setSelectedSubreddits] = useState([]);
+  const [communitySuggestions, setCommunitySuggestions] = useState([]);
+  const [discoveringCommunities, setDiscoveringCommunities] = useState(false);
+  const [multiScanning, setMultiScanning] = useState(false);
+  const [multiScanError, setMultiScanError] = useState('');
+  const [multiScanResult, setMultiScanResult] = useState(null);
 
   const loadPage = useCallback(async () => {
     setLoading(true);
@@ -466,6 +472,17 @@ const GameDetail = () => {
     loadPage();
   }, [loadPage]);
 
+  useEffect(() => {
+    const baseSubreddit = String(game?.subreddit || '').replace(/^r\//i, '').trim();
+    if (!baseSubreddit) return;
+
+    setSelectedSubreddits((prev) => {
+      const existing = prev.map((item) => String(item || '').toLowerCase());
+      if (existing.includes(baseSubreddit.toLowerCase())) return prev;
+      return [baseSubreddit, ...prev].slice(0, 5);
+    });
+  }, [game?.subreddit]);
+
   const runScan = async () => {
     setScanning(true);
     setPageError('');
@@ -494,6 +511,92 @@ const GameDetail = () => {
       setPageError(typeof detail === 'string' ? detail : 'Failed to delete game.');
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const addSelectedSubreddit = (subredditInput) => {
+    const subreddit = String(subredditInput || '').replace(/^r\//i, '').trim();
+    if (!subreddit) return;
+
+    setSelectedSubreddits((prev) => {
+      const existing = prev.map((item) => String(item || '').toLowerCase());
+      if (existing.includes(subreddit.toLowerCase())) return prev;
+      if (prev.length >= 5) return prev;
+      return [...prev, subreddit];
+    });
+  };
+
+  const removeSelectedSubreddit = (subredditInput) => {
+    const subreddit = String(subredditInput || '').toLowerCase();
+    if (!subreddit) return;
+
+    setSelectedSubreddits((prev) => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((item) => String(item || '').toLowerCase() !== subreddit);
+    });
+  };
+
+  const discoverCommunities = async () => {
+    const gameName = String(game?.name || '').trim();
+    if (!gameName) {
+      setMultiScanError('Game name is required to discover communities.');
+      return;
+    }
+
+    setDiscoveringCommunities(true);
+    setMultiScanError('');
+
+    try {
+      const resp = await api.get('/api/games/discover-subreddits', {
+        params: {
+          game_name: gameName,
+          max_results: 5,
+        },
+      });
+
+      const suggestions = Array.isArray(resp?.data?.results) ? resp.data.results : [];
+      setCommunitySuggestions(suggestions);
+
+      suggestions.forEach((item) => {
+        const subreddit = String(item?.subreddit || '').trim();
+        if (subreddit) addSelectedSubreddit(subreddit);
+      });
+
+      if (suggestions.length === 0) {
+        setMultiScanError('No additional subreddit suggestions found for this game.');
+      }
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setMultiScanError(typeof detail === 'string' ? detail : 'Failed to discover related communities.');
+    } finally {
+      setDiscoveringCommunities(false);
+    }
+  };
+
+  const runMultiScan = async () => {
+    if (selectedSubreddits.length === 0) {
+      setMultiScanError('Select at least one subreddit for a combined scan.');
+      return;
+    }
+
+    setMultiScanning(true);
+    setMultiScanError('');
+
+    try {
+      const payload = {
+        subreddits: selectedSubreddits,
+        game_name: String(game?.name || ''),
+        keywords: String(game?.keywords || ''),
+        include_breakdown: true,
+      };
+
+      const resp = await api.post('/api/games/multi-scan', payload);
+      setMultiScanResult(resp?.data || null);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setMultiScanError(typeof detail === 'string' ? detail : 'Combined scan failed.');
+    } finally {
+      setMultiScanning(false);
     }
   };
 
@@ -555,6 +658,23 @@ const GameDetail = () => {
     });
     return ranked.slice(0, 12);
   }, [latestPosts]);
+
+  const multiOverall = multiScanResult?.overall || {};
+  const multiMeta = multiScanResult?.meta || {};
+  const multiBreakdownRows = toArray(multiScanResult?.subreddit_breakdown?.breakdown);
+
+  const multiOverallThemes = useMemo(
+    () => normalizeInsightEntries(multiOverall?.themes, {}),
+    [multiOverall?.themes]
+  );
+  const multiOverallPain = useMemo(
+    () => normalizeInsightEntries(multiOverall?.pain_points, {}),
+    [multiOverall?.pain_points]
+  );
+  const multiOverallWins = useMemo(
+    () => normalizeInsightEntries(multiOverall?.wins, {}),
+    [multiOverall?.wins]
+  );
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-zinc-400">Loading game...</div>;
@@ -618,6 +738,268 @@ const GameDetail = () => {
           {game.keywords ? <p className="text-sm text-zinc-500 mt-1">Keywords: {game.keywords}</p> : null}
           {pageError ? <p className="text-sm text-red-400 mt-4">{pageError}</p> : null}
         </section>
+
+        <section className="card-glass p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-heading text-3xl font-black">Combined Community Scan</h2>
+            <span className="font-mono text-xs text-zinc-500">{selectedSubreddits.length}/5 selected</span>
+          </div>
+          <p className="mt-2 text-zinc-400">
+            Run one scan across multiple subreddits. Overall analysis is shown first, with a per-community breakdown below.
+          </p>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {selectedSubreddits.map((subreddit) => {
+              const normalized = String(subreddit || '').trim();
+              const isPrimary = normalized.toLowerCase() === String(game?.subreddit || '').replace(/^r\//i, '').toLowerCase();
+              return (
+                <span
+                  key={`selected-${normalized}`}
+                  className="inline-flex items-center gap-2 px-3 py-1 border border-[#D3F34B]/30 bg-[#D3F34B]/10 text-[#e7ff8b]"
+                >
+                  r/{normalized}
+                  {!isPrimary && selectedSubreddits.length > 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => removeSelectedSubreddit(normalized)}
+                      className="text-[#e7ff8b] hover:text-white text-xs"
+                      title="Remove subreddit"
+                    >
+                      x
+                    </button>
+                  ) : null}
+                </span>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={discoverCommunities}
+              disabled={discoveringCommunities}
+              className="px-4 py-2 border border-white/15 text-zinc-300 hover:text-white hover:border-white/30 disabled:opacity-60"
+            >
+              {discoveringCommunities ? 'Discovering...' : 'Discover Communities'}
+            </button>
+            <button
+              type="button"
+              onClick={runMultiScan}
+              disabled={multiScanning || selectedSubreddits.length === 0}
+              className="px-4 py-2 bg-[#D3F34B]/20 border border-[#D3F34B]/40 text-[#e7ff8b] disabled:opacity-60"
+            >
+              {multiScanning ? 'Running Combined Scan...' : 'Run Combined Scan'}
+            </button>
+          </div>
+
+          {communitySuggestions.length > 0 ? (
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+              {communitySuggestions.map((item, idx) => {
+                const subreddit = String(item?.subreddit || '').trim();
+                if (!subreddit) return null;
+
+                const alreadySelected = selectedSubreddits.some(
+                  (value) => String(value || '').toLowerCase() === subreddit.toLowerCase()
+                );
+
+                return (
+                  <button
+                    key={`community-${subreddit}-${idx}`}
+                    type="button"
+                    onClick={() => addSelectedSubreddit(subreddit)}
+                    disabled={alreadySelected || selectedSubreddits.length >= 5}
+                    className={`text-left p-3 border transition-colors ${
+                      alreadySelected
+                        ? 'border-[#D3F34B]/40 bg-[#D3F34B]/10 text-[#e7ff8b]'
+                        : 'border-white/10 bg-black/30 text-zinc-200 hover:border-white/30'
+                    } disabled:opacity-60`}
+                  >
+                    <p className="font-semibold">r/{subreddit}</p>
+                    <p className="text-xs text-zinc-400 mt-1">{item?.reason || 'Relevant community match.'}</p>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {multiScanError ? <p className="text-sm text-amber-300 mt-3">{multiScanError}</p> : null}
+        </section>
+
+        {multiScanResult ? (
+          <>
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              <MetricCard label="Combined Posts" value={Number(multiMeta?.posts_analysed || 0)} />
+              <MetricCard label="Combined Comments" value={Number(multiMeta?.comments_sampled || 0)} />
+              <MetricCard label="Communities" value={toArray(multiMeta?.subreddits).length} />
+              <MetricCard
+                label="Overall Sentiment"
+                value={multiOverall?.sentiment_label || 'Unknown'}
+                accent={String(multiOverall?.sentiment_label || '').toLowerCase().includes('mixed') ? 'text-[#FCEE0A]' : ''}
+              />
+            </section>
+
+            <section className="card-glass p-0 overflow-hidden">
+              <div className="border-l-4 border-[#00E5FF] p-6 md:p-8">
+                <h2 className="font-heading text-4xl font-black mb-4">Combined Sentiment Analysis</h2>
+                <div className={`inline-flex px-3 py-1 text-sm border ${sentimentStyles(multiOverall?.sentiment_label)}`}>
+                  {multiOverall?.sentiment_label || 'Unknown'}
+                </div>
+                <p className="text-zinc-100 mt-4 text-lg leading-relaxed whitespace-pre-wrap">
+                  {renderTextWithPostRefs(
+                    multiOverall?.sentiment_summary || 'No combined summary was returned by analysis.',
+                    {}
+                  )}
+                </p>
+              </div>
+            </section>
+
+            <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+              <InsightColumn
+                title="Combined Themes"
+                icon="TH"
+                entries={multiOverallThemes}
+                sourcePosts={[]}
+                postsById={{}}
+              />
+              <InsightColumn
+                title="Combined Pain Points"
+                icon="PP"
+                entries={multiOverallPain}
+                sourcePosts={[]}
+                postsById={{}}
+                tone="danger"
+              />
+              <InsightColumn
+                title="Combined Wins"
+                icon="CW"
+                entries={multiOverallWins}
+                sourcePosts={[]}
+                postsById={{}}
+                tone="success"
+              />
+            </section>
+
+            <section className="card-glass p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-heading text-4xl font-black">Per-Subreddit Breakdown</h2>
+                <span className="font-mono text-sm text-zinc-500">{multiBreakdownRows.length} communities</span>
+              </div>
+
+              {multiScanResult?.subreddit_breakdown?.error ? (
+                <p className="text-sm text-amber-300 mb-4">
+                  Breakdown fallback: {String(multiScanResult.subreddit_breakdown.error)}
+                </p>
+              ) : null}
+
+              {multiBreakdownRows.length === 0 ? (
+                <p className="text-zinc-400">No subreddit-level breakdown was returned.</p>
+              ) : (
+                <div className="space-y-4">
+                  {multiBreakdownRows.map((row, idx) => {
+                    const rowThemes = toArray(row?.top_themes).map(normalizeListEntry).filter(Boolean).slice(0, 5);
+                    const rowPain = normalizeInsightEntries(row?.top_pain_points, {});
+                    const rowWins = normalizeInsightEntries(row?.top_wins, {});
+                    const rowBullets = toArray(row?.summary_bullets).map(normalizeListEntry).filter(Boolean).slice(0, 3);
+
+                    return (
+                      <article key={`breakdown-${row?.subreddit || idx}`} className="border border-white/10 bg-black/20 p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="font-heading text-2xl font-bold">r/{row?.subreddit || 'unknown'}</h3>
+                          <span className={`text-sm border px-2 py-1 ${sentimentStyles(row?.sentiment_label)}`}>
+                            {row?.sentiment_label || 'Unknown'}
+                          </span>
+                        </div>
+
+                        {rowBullets.length > 0 ? (
+                          <ul className="mt-3 space-y-1 text-zinc-200">
+                            {rowBullets.map((bullet, bulletIdx) => (
+                              <li key={`bullet-${idx}-${bulletIdx}`}>
+                                {renderTextWithPostRefs(bullet, {})}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+
+                        <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-4">
+                          <div>
+                            <h4 className="font-heading text-lg font-bold mb-2 text-[#8BE8FF]">Top Themes</h4>
+                            {rowThemes.length === 0 ? (
+                              <p className="text-zinc-500 text-sm">None</p>
+                            ) : (
+                              <ul className="space-y-1 text-zinc-200">
+                                {rowThemes.map((theme, themeIdx) => (
+                                  <li key={`theme-${idx}-${themeIdx}`}>
+                                    {renderTextWithPostRefs(theme, {})}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+
+                          <div>
+                            <h4 className="font-heading text-lg font-bold mb-2 text-[#FF4569]">Top Pain Points</h4>
+                            {rowPain.length === 0 ? (
+                              <p className="text-zinc-500 text-sm">None</p>
+                            ) : (
+                              <ul className="space-y-2 text-zinc-200">
+                                {rowPain.map((item, painIdx) => (
+                                  <li key={`pain-${idx}-${painIdx}`}>
+                                    <p>{renderTextWithPostRefs(item.text, {})}</p>
+                                    <div className="mt-1 flex flex-wrap gap-3">
+                                      {toArray(item.evidenceLinks).map((link, linkIdx) => (
+                                        <a
+                                          key={`pain-link-${idx}-${painIdx}-${linkIdx}`}
+                                          href={link}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-xs text-zinc-500 hover:text-zinc-300"
+                                        >
+                                          [source {linkIdx + 1}]
+                                        </a>
+                                      ))}
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+
+                          <div>
+                            <h4 className="font-heading text-lg font-bold mb-2 text-[#7CFF9A]">Top Wins</h4>
+                            {rowWins.length === 0 ? (
+                              <p className="text-zinc-500 text-sm">None</p>
+                            ) : (
+                              <ul className="space-y-2 text-zinc-200">
+                                {rowWins.map((item, winIdx) => (
+                                  <li key={`win-${idx}-${winIdx}`}>
+                                    <p>{renderTextWithPostRefs(item.text, {})}</p>
+                                    <div className="mt-1 flex flex-wrap gap-3">
+                                      {toArray(item.evidenceLinks).map((link, linkIdx) => (
+                                        <a
+                                          key={`win-link-${idx}-${winIdx}-${linkIdx}`}
+                                          href={link}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-xs text-zinc-500 hover:text-zinc-300"
+                                        >
+                                          [source {linkIdx + 1}]
+                                        </a>
+                                      ))}
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </>
+        ) : null}
 
         <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           <MetricCard label="Posts Analysed" value={postsAnalyzed} />
