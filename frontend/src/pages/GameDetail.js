@@ -84,12 +84,74 @@ const formatShortTime = (value) => {
   return `${dt.toLocaleDateString()}, ${dt.toLocaleTimeString()}`;
 };
 
+const POST_REF_REGEX = /\[POST:([a-z0-9_]+)\]/gi;
+
 const toTokens = (value) => {
   return String(value || '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter((word) => word.length > 3 && !STOP_WORDS.has(word));
+};
+
+const extractPostIdsFromText = (value) => {
+  const ids = [];
+  const text = String(value || '');
+  if (!text) return ids;
+
+  let match;
+  while ((match = POST_REF_REGEX.exec(text)) !== null) {
+    const id = String(match[1] || '').trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  POST_REF_REGEX.lastIndex = 0;
+
+  return ids;
+};
+
+const buildPostLookup = (posts) => {
+  const byId = {};
+  toArray(posts).forEach((post) => {
+    const id = String(post?.id || '').trim();
+    if (!id) return;
+    byId[id] = post;
+  });
+  return byId;
+};
+
+const toPermalink = (postId, postsById) => {
+  const id = String(postId || '').trim();
+  if (!id) return '';
+  const fromPost = postsById?.[id]?.permalink;
+  return fromPost || `https://www.reddit.com/comments/${id}/`;
+};
+
+const normalizeEvidenceLinks = (value) => {
+  const links = [];
+
+  const pushLink = (raw) => {
+    const candidate = String(raw || '').trim();
+    if (!candidate) return;
+
+    const match = candidate.match(/reddit\.com\/comments\/([a-z0-9_]+)/i);
+    if (match) {
+      const canonical = `https://www.reddit.com/comments/${match[1]}/`;
+      if (!links.includes(canonical)) links.push(canonical);
+      return;
+    }
+
+    if (/^https?:\/\//i.test(candidate) && !links.includes(candidate)) {
+      links.push(candidate);
+    }
+  };
+
+  if (Array.isArray(value)) {
+    value.forEach(pushLink);
+  } else {
+    pushLink(value);
+  }
+
+  return links;
 };
 
 const findSourcePost = (entry, posts) => {
@@ -116,6 +178,79 @@ const findSourcePost = (entry, posts) => {
   return bestScore > 0 ? best : null;
 };
 
+const normalizeInsightEntries = (entries, postsById) => {
+  return toArray(entries)
+    .map((entry) => {
+      const text = normalizeListEntry(entry);
+      const postIds = extractPostIdsFromText(text);
+
+      const fromIds = postIds
+        .map((postId) => toPermalink(postId, postsById))
+        .filter(Boolean);
+
+      const fromEvidence = entry && typeof entry === 'object'
+        ? normalizeEvidenceLinks(entry.evidence)
+        : [];
+
+      const evidenceLinks = [];
+      [...fromIds, ...fromEvidence].forEach((link) => {
+        if (!evidenceLinks.includes(link)) evidenceLinks.push(link);
+      });
+
+      return {
+        text,
+        evidenceLinks,
+      };
+    })
+    .filter((item) => Boolean(item.text));
+};
+
+const renderTextWithPostRefs = (value, postsById) => {
+  const content = String(value || '');
+  if (!content) return content;
+
+  const nodes = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = POST_REF_REGEX.exec(content)) !== null) {
+    const start = match.index;
+    const end = POST_REF_REGEX.lastIndex;
+
+    if (start > lastIndex) {
+      nodes.push(content.slice(lastIndex, start));
+    }
+
+    const postId = String(match[1] || '').trim();
+    const href = toPermalink(postId, postsById);
+
+    if (href) {
+      nodes.push(
+        <a
+          key={`post-ref-${start}-${postId}`}
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[#D3F34B] hover:text-[#e7ff8b] underline decoration-transparent hover:decoration-current"
+        >
+          [POST:{postId}]
+        </a>
+      );
+    } else {
+      nodes.push(match[0]);
+    }
+
+    lastIndex = end;
+  }
+
+  if (lastIndex < content.length) {
+    nodes.push(content.slice(lastIndex));
+  }
+
+  POST_REF_REGEX.lastIndex = 0;
+  return nodes.length > 0 ? nodes : content;
+};
+
 const MetricCard = ({ label, value, accent = '' }) => {
   return (
     <article className="card-glass p-5 min-h-[120px] flex flex-col justify-between">
@@ -125,7 +260,7 @@ const MetricCard = ({ label, value, accent = '' }) => {
   );
 };
 
-const InsightColumn = ({ title, icon, entries, sourcePosts, tone = 'neutral' }) => {
+const InsightColumn = ({ title, icon, entries, sourcePosts, postsById, tone = 'neutral' }) => {
   const toneClass =
     tone === 'danger'
       ? 'text-[#FF4569]'
@@ -145,23 +280,36 @@ const InsightColumn = ({ title, icon, entries, sourcePosts, tone = 'neutral' }) 
       ) : (
         <ol className="space-y-3">
           {entries.map((entry, idx) => {
-            const source = findSourcePost(entry, sourcePosts);
+            const fallbackSource = entry.evidenceLinks.length === 0
+              ? findSourcePost(entry.text, sourcePosts)
+              : null;
+
+            const sourceLinks = entry.evidenceLinks.length > 0
+              ? entry.evidenceLinks.slice(0, 2)
+              : fallbackSource?.permalink
+                ? [fallbackSource.permalink]
+                : [];
 
             return (
               <li key={`${title}-${idx}`} className="text-zinc-200">
                 <div className="flex gap-3">
                   <span className={`font-mono text-sm ${toneClass}`}>{String(idx + 1).padStart(2, '0')}</span>
                   <div>
-                    <p className="text-lg leading-snug">{entry}</p>
-                    {source?.permalink ? (
-                      <a
-                        href={source.permalink}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex mt-1 text-xs text-zinc-500 hover:text-zinc-300"
-                      >
-                        [source]
-                      </a>
+                    <p className="text-lg leading-snug">{renderTextWithPostRefs(entry.text, postsById)}</p>
+                    {sourceLinks.length > 0 ? (
+                      <div className="mt-1 flex items-center gap-3">
+                        {sourceLinks.map((link, sourceIdx) => (
+                          <a
+                            key={`${title}-${idx}-source-${sourceIdx}`}
+                            href={link}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex text-xs text-zinc-500 hover:text-zinc-300"
+                          >
+                            [source {sourceIdx + 1}]
+                          </a>
+                        ))}
+                      </div>
                     ) : null}
                   </div>
                 </div>
@@ -353,9 +501,20 @@ const GameDetail = () => {
   const latestPosts = toArray(latestDetail?.posts);
   const latestComments = toArray(latestDetail?.comments);
 
-  const themes = toArray(analysis.themes).map(normalizeListEntry).filter(Boolean);
-  const painPoints = toArray(analysis.pain_points).map(normalizeListEntry).filter(Boolean);
-  const wins = toArray(analysis.wins).map(normalizeListEntry).filter(Boolean);
+  const sourcePostsById = useMemo(() => buildPostLookup(latestPosts), [latestPosts]);
+
+  const themes = useMemo(
+    () => normalizeInsightEntries(analysis.themes, sourcePostsById),
+    [analysis.themes, sourcePostsById]
+  );
+  const painPoints = useMemo(
+    () => normalizeInsightEntries(analysis.pain_points, sourcePostsById),
+    [analysis.pain_points, sourcePostsById]
+  );
+  const wins = useMemo(
+    () => normalizeInsightEntries(analysis.wins, sourcePostsById),
+    [analysis.wins, sourcePostsById]
+  );
 
   const history = useMemo(() => {
     return results.map((result) => {
@@ -479,7 +638,10 @@ const GameDetail = () => {
               {analysis.sentiment_label || 'Unknown'}
             </div>
             <p className="text-zinc-100 mt-4 text-lg leading-relaxed whitespace-pre-wrap">
-              {analysis.sentiment_summary || 'No summary was returned by analysis.'}
+              {renderTextWithPostRefs(
+                analysis.sentiment_summary || 'No summary was returned by analysis.',
+                sourcePostsById
+              )}
             </p>
 
             {analysis?.error ? (
@@ -494,9 +656,29 @@ const GameDetail = () => {
         </section>
 
         <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          <InsightColumn title="Top Themes" icon="TH" entries={themes} sourcePosts={sourcePosts} />
-          <InsightColumn title="Pain Points" icon="PP" entries={painPoints} sourcePosts={sourcePosts} tone="danger" />
-          <InsightColumn title="Community Wins" icon="CW" entries={wins} sourcePosts={sourcePosts} tone="success" />
+          <InsightColumn
+            title="Top Themes"
+            icon="TH"
+            entries={themes}
+            sourcePosts={sourcePosts}
+            postsById={sourcePostsById}
+          />
+          <InsightColumn
+            title="Pain Points"
+            icon="PP"
+            entries={painPoints}
+            sourcePosts={sourcePosts}
+            postsById={sourcePostsById}
+            tone="danger"
+          />
+          <InsightColumn
+            title="Community Wins"
+            icon="CW"
+            entries={wins}
+            sourcePosts={sourcePosts}
+            postsById={sourcePostsById}
+            tone="success"
+          />
         </section>
 
         <section className="card-glass p-6">
