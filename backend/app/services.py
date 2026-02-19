@@ -41,6 +41,7 @@ _post_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _comments_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _discovery_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _multi_scan_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_subreddit_breakdown_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
 def _normalize_subreddit(value: str) -> str:
@@ -1927,6 +1928,224 @@ def _merge_breakdown_with_fallback(
     return merged_rows
 
 
+def _build_subreddit_breakdown_cache_key(
+    subreddit: str,
+    posts: List[Dict[str, Any]],
+    game_name: str,
+    keywords: str,
+) -> str:
+    ranked_posts = sorted(posts or [], key=_calculate_post_rank, reverse=True)[:BREAKDOWN_MAX_POSTS_PER_SUBREDDIT]
+    top_post_ids = [str(post.get("id") or "").strip() for post in ranked_posts if str(post.get("id") or "").strip()]
+    payload = {
+        "subreddit": _normalize_subreddit(subreddit).lower(),
+        "game_name": _normalize_game_lookup_key(game_name),
+        "keywords": " ".join(_tokenize_text(keywords)),
+        "post_ids": top_post_ids,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _extract_post_id_from_evidence_link(link: str) -> str:
+    match = re.search(r"reddit\.com/comments/([a-z0-9_]+)", str(link or ""), re.IGNORECASE)
+    if match:
+        return str(match.group(1)).strip()
+    return ""
+
+
+def _first_sentence(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", value) if part.strip()]
+    if parts:
+        return parts[0]
+
+    return value[:220].strip()
+
+
+def _extract_representative_post_ids(
+    pain_points: List[Dict[str, Any]],
+    wins: List[Dict[str, Any]],
+    posts: List[Dict[str, Any]],
+    max_ids: int = 2,
+) -> List[str]:
+    ids: List[str] = []
+
+    for item in (pain_points + wins):
+        evidence = _normalize_evidence_links(item.get("evidence")) if isinstance(item, dict) else []
+        for link in evidence:
+            post_id = _extract_post_id_from_evidence_link(link)
+            if post_id and post_id not in ids:
+                ids.append(post_id)
+            if len(ids) >= max_ids:
+                return ids
+
+    for post in sorted(posts or [], key=_calculate_post_rank, reverse=True):
+        post_id = str(post.get("id") or "").strip()
+        if post_id and post_id not in ids:
+            ids.append(post_id)
+        if len(ids) >= max_ids:
+            break
+
+    return ids[:max_ids]
+
+
+def _build_single_subreddit_fallback_row(subreddit: str, posts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized_subreddit = _normalize_subreddit(subreddit) or subreddit
+    fallback_rows = _build_fallback_breakdown_rows({normalized_subreddit: posts or []})
+    if fallback_rows:
+        return fallback_rows[0]
+
+    return {
+        "subreddit": normalized_subreddit,
+        "sentiment_label": "Mixed",
+        "summary_bullets": [
+            f"Overall sentiment in r/{normalized_subreddit} is mixed.",
+            "Insufficient subreddit-level data to produce a reliable AI summary.",
+            "Representative threads are available in the sampled posts.",
+        ],
+        "top_themes": [
+            "Insufficient subreddit signal - not enough high-engagement product feedback",
+            "Insufficient subreddit signal - unable to extract repeated subtopics",
+            "Insufficient subreddit signal - rerun scan after more activity",
+        ],
+        "top_pain_points": [
+            {"text": "Insufficient data to identify repeated pain points.", "evidence": []},
+            {"text": "Insufficient data to identify repeated pain points.", "evidence": []},
+            {"text": "Insufficient data to identify repeated pain points.", "evidence": []},
+        ],
+        "top_wins": [
+            {"text": "Insufficient data to identify repeated wins.", "evidence": []},
+            {"text": "Insufficient data to identify repeated wins.", "evidence": []},
+            {"text": "Insufficient data to identify repeated wins.", "evidence": []},
+        ],
+    }
+
+
+def _map_analysis_to_breakdown_row(
+    subreddit: str,
+    posts: List[Dict[str, Any]],
+    analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    fallback_row = _build_single_subreddit_fallback_row(subreddit, posts)
+
+    sentiment_label = _normalize_sentiment_label(analysis.get("sentiment_label"))
+    if sentiment_label == "Unknown":
+        sentiment_label = str(fallback_row.get("sentiment_label") or "Mixed")
+
+    themes = _normalize_themes(analysis.get("themes"))[:5]
+    fallback_themes = [str(item).strip() for item in fallback_row.get("top_themes", []) if str(item).strip()]
+    for fallback_theme in fallback_themes:
+        if len(themes) >= 3:
+            break
+        if fallback_theme not in themes:
+            themes.append(fallback_theme)
+    themes = themes[:5]
+
+    pain_points = _normalize_insight_items(analysis.get("pain_points"))[:3]
+    pain_points = _ensure_evidence_for_items(pain_points, posts)[:3]
+    fallback_pain = fallback_row.get("top_pain_points", []) if isinstance(fallback_row.get("top_pain_points"), list) else []
+    while len(pain_points) < 3:
+        idx = len(pain_points)
+        candidate = fallback_pain[idx % len(fallback_pain)] if fallback_pain else {"text": "Insufficient data to identify repeated pain points.", "evidence": []}
+        pain_points.append({
+            "text": str(candidate.get("text") or "Insufficient data to identify repeated pain points."),
+            "evidence": _normalize_evidence_links(candidate.get("evidence")),
+        })
+
+    wins = _normalize_insight_items(analysis.get("wins"))[:3]
+    wins = _ensure_evidence_for_items(wins, posts)[:3]
+    fallback_wins = fallback_row.get("top_wins", []) if isinstance(fallback_row.get("top_wins"), list) else []
+    while len(wins) < 3:
+        idx = len(wins)
+        candidate = fallback_wins[idx % len(fallback_wins)] if fallback_wins else {"text": "Insufficient data to identify repeated wins.", "evidence": []}
+        wins.append({
+            "text": str(candidate.get("text") or "Insufficient data to identify repeated wins."),
+            "evidence": _normalize_evidence_links(candidate.get("evidence")),
+        })
+
+    summary_text = _first_sentence(str(analysis.get("sentiment_summary") or ""))
+    if not summary_text:
+        fallback_summary = fallback_row.get("summary_bullets", []) if isinstance(fallback_row.get("summary_bullets"), list) else []
+        summary_text = str(fallback_summary[1] if len(fallback_summary) > 1 else "Subreddit-level signal was extracted from top community threads.")
+
+    representative_ids = _extract_representative_post_ids(pain_points, wins, posts, max_ids=2)
+    if representative_ids:
+        if len(representative_ids) == 1:
+            representative_line = f"Representative threads: [POST:{representative_ids[0]}]"
+        else:
+            representative_line = f"Representative threads: [POST:{representative_ids[0]}], [POST:{representative_ids[1]}]"
+    else:
+        representative_line = "Representative threads are available in the sampled posts."
+
+    return {
+        "subreddit": _normalize_subreddit(subreddit) or subreddit,
+        "sentiment_label": sentiment_label,
+        "summary_bullets": [
+            f"Overall sentiment in r/{_normalize_subreddit(subreddit) or subreddit} is {sentiment_label.lower()}.",
+            summary_text,
+            representative_line,
+        ][:3],
+        "top_themes": themes[:5],
+        "top_pain_points": pain_points[:3],
+        "top_wins": wins[:3],
+    }
+
+
+async def _analyze_one_subreddit_breakdown_row(
+    subreddit: str,
+    posts: List[Dict[str, Any]],
+    game_name: str,
+    keywords: str,
+    semaphore: asyncio.Semaphore,
+) -> Dict[str, Any]:
+    normalized_subreddit = _normalize_subreddit(subreddit) or subreddit
+    ranked_posts = sorted(posts or [], key=_calculate_post_rank, reverse=True)[:BREAKDOWN_MAX_POSTS_PER_SUBREDDIT]
+    if not ranked_posts:
+        return _build_single_subreddit_fallback_row(normalized_subreddit, ranked_posts)
+
+    cache_key = _build_subreddit_breakdown_cache_key(
+        normalized_subreddit,
+        ranked_posts,
+        game_name=game_name,
+        keywords=keywords,
+    )
+
+    now = time.time()
+    cached_row = _subreddit_breakdown_cache.get(cache_key)
+    if cached_row and now - cached_row[0] < MULTI_SCAN_CACHE_TTL:
+        return cached_row[1]
+
+    try:
+        try:
+            subreddit_comments = await sample_comments_for_posts(
+                ranked_posts,
+                max_posts=min(6, TOP_POSTS_FOR_COMMENTS),
+                max_comments_per_post=MAX_COMMENTS_PER_POST,
+            )
+        except Exception:
+            subreddit_comments = []
+
+        async with semaphore:
+            analysis = await analyze_subreddit_with_ai(
+                ranked_posts,
+                subreddit_comments,
+                subreddit_name=normalized_subreddit,
+                game_name=game_name,
+                keywords=keywords,
+            )
+
+        row = _map_analysis_to_breakdown_row(normalized_subreddit, ranked_posts, analysis)
+        _subreddit_breakdown_cache[cache_key] = (now, row)
+        return row
+    except Exception as exc:
+        print(f"Subreddit breakdown failed for r/{normalized_subreddit}: {exc}")
+        row = _build_single_subreddit_fallback_row(normalized_subreddit, ranked_posts)
+        _subreddit_breakdown_cache[cache_key] = (now, row)
+        return row
+
+
 async def analyze_subreddit_breakdown_with_ai(
     posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
     game_name: str = "",
@@ -1937,54 +2156,43 @@ async def analyze_subreddit_breakdown_with_ai(
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return _build_fallback_breakdown(posts_by_subreddit, "OpenAI API key not configured")
+        return {
+            "error": "fallback_generated",
+            "breakdown": _build_fallback_breakdown_rows(posts_by_subreddit),
+        }
 
-    try:
-        import openai
+    semaphore = asyncio.Semaphore(2)
+    ordered_subreddits = sorted(posts_by_subreddit.keys())
 
-        openai.api_key = api_key
-        prompt = _build_breakdown_prompt(posts_by_subreddit, game_name=game_name, keywords=keywords)
-
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert gaming community analyst. "
-                        "Return valid JSON only and avoid unsupported assumptions."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=1800,
+    tasks = [
+        _analyze_one_subreddit_breakdown_row(
+            subreddit,
+            posts_by_subreddit.get(subreddit, []),
+            game_name=game_name,
+            keywords=keywords,
+            semaphore=semaphore,
         )
+        for subreddit in ordered_subreddits
+    ]
 
-        text = response.choices[0].message.content or ""
-        parsed = _extract_json_payload(text)
+    rows: List[Dict[str, Any]] = []
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for idx, result in enumerate(results):
+        subreddit = ordered_subreddits[idx]
+        subreddit_posts = posts_by_subreddit.get(subreddit, [])
 
-        if parsed is None:
-            print(f"Breakdown parse failed. Raw excerpt: {text[:300]!r}")
-            repaired = await _repair_json_payload_with_ai(text, "subreddit_breakdown")
-            if repaired is not None:
-                print("Breakdown JSON repair used.")
-                parsed = repaired
+        if isinstance(result, Exception):
+            print(f"Subreddit breakdown task failed for r/{subreddit}: {result}")
+            rows.append(_build_single_subreddit_fallback_row(subreddit, subreddit_posts))
+            continue
 
-        if parsed is None:
-            return _build_fallback_breakdown(posts_by_subreddit, "parse_or_repair_failed")
+        if not isinstance(result, dict):
+            rows.append(_build_single_subreddit_fallback_row(subreddit, subreddit_posts))
+            continue
 
-        normalized = _normalize_breakdown_payload(parsed)
-        if not normalized.get("breakdown"):
-            return _build_fallback_breakdown(posts_by_subreddit, "normalized_breakdown_empty")
+        rows.append(result)
 
-        merged_rows = _merge_breakdown_with_fallback(normalized, posts_by_subreddit)
-        if not merged_rows:
-            return _build_fallback_breakdown(posts_by_subreddit, "merged_breakdown_empty")
-
-        return {"breakdown": merged_rows}
-    except Exception as exc:
-        return _build_fallback_breakdown(posts_by_subreddit, str(exc))
+    return {"breakdown": rows}
 
 
 async def scan_multiple_subreddits(
