@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 import json
 import math
 import os
@@ -27,7 +28,8 @@ DISCOVERY_MAX_CANDIDATES = 30
 DISCOVERY_SAMPLE_POSTS = 25
 DISCOVERY_OPENAI_TOP = 10
 MAX_MULTI_SUBREDDITS = 5
-BREAKDOWN_MAX_POSTS_PER_SUBREDDIT = 20
+BREAKDOWN_MAX_POSTS_PER_SUBREDDIT = 12
+BREAKDOWN_SELFTEXT_TRUNCATE = 400
 
 TOP_POSTS_FOR_COMMENTS = 15
 MAX_COMMENTS_PER_POST = 10
@@ -1234,7 +1236,7 @@ def _build_breakdown_prompt(
 
             line = f"- [POST:{post_id}] [{score} pts, {num_comments} comments] {title}"
             if selftext and selftext not in ("[removed]", "[deleted]"):
-                snippet = selftext.replace("\n", " ")[:500].strip()
+                snippet = selftext.replace("\n", " ")[:BREAKDOWN_SELFTEXT_TRUNCATE].strip()
                 if snippet:
                     line += f"\n  Snippet: {snippet}"
             lines.append(line)
@@ -1370,6 +1372,154 @@ def _normalize_breakdown_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"breakdown": normalized_rows}
 
 
+def _estimate_sentiment_from_posts(posts: List[Dict[str, Any]]) -> str:
+    if not posts:
+        return "Mixed"
+
+    negative_terms = {
+        "bug", "broken", "issue", "issues", "crash", "crashes", "lag", "cheater", "cheaters",
+        "toxic", "queue", "queues", "matchmaking", "delay", "problem", "problems", "frustrating",
+    }
+    positive_terms = {
+        "fun", "great", "good", "love", "enjoy", "smooth", "awesome", "improved", "improvement",
+        "best", "better", "satisfying", "positive", "hype",
+    }
+
+    neg = 0
+    pos = 0
+
+    for post in posts:
+        body = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+        for term in negative_terms:
+            if term in body:
+                neg += 1
+        for term in positive_terms:
+            if term in body:
+                pos += 1
+
+    if neg > pos * 1.2:
+        return "Negative"
+    if pos > neg * 1.2:
+        return "Positive"
+    return "Mixed"
+
+
+def _extract_theme_terms(posts: List[Dict[str, Any]], max_terms: int = 5) -> List[str]:
+    stop_words = {
+        "the", "and", "with", "from", "this", "that", "have", "your", "about", "into", "they",
+        "their", "them", "what", "when", "where", "which", "were", "been", "just", "also", "more",
+        "some", "many", "over", "than", "there", "users", "community", "game", "reddit", "post",
+    }
+
+    counter: Counter[str] = Counter()
+    for post in posts:
+        text_blob = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+        for token in re.findall(r"[a-z0-9]+", text_blob):
+            if len(token) <= 3:
+                continue
+            if token in stop_words:
+                continue
+            counter[token] += 1
+
+    return [term for term, _ in counter.most_common(max_terms)]
+
+
+def _fallback_point_from_post(post: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    title = str(post.get("title", "") or "").strip()
+    post_id = str(post.get("id", "") or "").strip()
+    evidence = [_format_permalink(post_id)] if post_id else []
+
+    if not title:
+        title = "Community discussion signal"
+
+    return {
+        "text": f"{prefix}: {title[:180]}",
+        "evidence": evidence,
+    }
+
+
+def _build_fallback_breakdown(
+    posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
+    error_message: str,
+) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+
+    negative_terms = (
+        "bug", "broken", "issue", "issues", "crash", "lag", "cheater", "queue", "matchmaking", "problem"
+    )
+    positive_terms = (
+        "fun", "great", "good", "love", "enjoy", "smooth", "improved", "awesome", "better", "hype"
+    )
+
+    for subreddit in sorted(posts_by_subreddit.keys()):
+        posts = sorted(posts_by_subreddit.get(subreddit, []), key=_calculate_post_rank, reverse=True)
+        if not posts:
+            continue
+
+        top_posts = posts[:BREAKDOWN_MAX_POSTS_PER_SUBREDDIT]
+        sentiment_label = _estimate_sentiment_from_posts(top_posts)
+        post_refs = [str(post.get("id") or "").strip() for post in top_posts if str(post.get("id") or "").strip()]
+
+        ref_one = post_refs[0] if post_refs else ""
+        ref_two = post_refs[1] if len(post_refs) > 1 else ref_one
+
+        terms = _extract_theme_terms(top_posts, max_terms=5)
+        if not terms:
+            terms = ["discussion", "feedback", "experience"]
+
+        summary_bullets = [
+            f"Overall sentiment is {sentiment_label.lower()} in r/{subreddit} based on top posts.",
+            f"Most repeated discussion topics include {', '.join(terms[:3])}.",
+            f"Representative threads: [POST:{ref_one}], [POST:{ref_two}]" if ref_one else "Representative threads are available in this community sample.",
+        ]
+
+        top_themes: List[str] = []
+        for idx, term in enumerate(terms[:5]):
+            ref = post_refs[idx % len(post_refs)] if post_refs else ""
+            suffix = f" [POST:{ref}]" if ref else ""
+            top_themes.append(f"{term.title()} - recurring topic in subreddit discussions{suffix}")
+        while len(top_themes) < 3:
+            ref = post_refs[len(top_themes) % len(post_refs)] if post_refs else ""
+            suffix = f" [POST:{ref}]" if ref else ""
+            top_themes.append(f"Community Feedback - repeated discussion signal{suffix}")
+
+        negative_posts = []
+        positive_posts = []
+        for post in top_posts:
+            blob = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+            if any(term in blob for term in negative_terms):
+                negative_posts.append(post)
+            if any(term in blob for term in positive_terms):
+                positive_posts.append(post)
+
+        if not negative_posts:
+            negative_posts = top_posts[-3:] if len(top_posts) >= 3 else top_posts
+        if not positive_posts:
+            positive_posts = top_posts[:3]
+
+        pain_points: List[Dict[str, Any]] = []
+        wins: List[Dict[str, Any]] = []
+
+        for idx in range(3):
+            pain_post = negative_posts[idx % len(negative_posts)]
+            win_post = positive_posts[idx % len(positive_posts)]
+            pain_points.append(_fallback_point_from_post(pain_post, "Players report concern"))
+            wins.append(_fallback_point_from_post(win_post, "Players highlight strength"))
+
+        rows.append(
+            {
+                "subreddit": subreddit,
+                "sentiment_label": sentiment_label,
+                "summary_bullets": summary_bullets[:3],
+                "top_themes": top_themes[:5],
+                "top_pain_points": pain_points[:3],
+                "top_wins": wins[:3],
+            }
+        )
+
+    return {"error": error_message, "breakdown": rows}
+
+
 async def analyze_subreddit_breakdown_with_ai(
     posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
     game_name: str = "",
@@ -1380,7 +1530,7 @@ async def analyze_subreddit_breakdown_with_ai(
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return {"error": "OpenAI API key not configured", "breakdown": []}
+        return _build_fallback_breakdown(posts_by_subreddit, "OpenAI API key not configured")
 
     try:
         import openai
@@ -1407,15 +1557,15 @@ async def analyze_subreddit_breakdown_with_ai(
         text = response.choices[0].message.content or ""
         parsed = _extract_json_payload(text)
         if parsed is None:
-            return {"error": "failed to parse output", "breakdown": []}
+            return _build_fallback_breakdown(posts_by_subreddit, "failed to parse output")
 
         normalized = _normalize_breakdown_payload(parsed)
         if not normalized.get("breakdown"):
-            return {"error": "empty breakdown output", "breakdown": []}
+            return _build_fallback_breakdown(posts_by_subreddit, "empty breakdown output")
 
         return normalized
     except Exception as exc:
-        return {"error": str(exc), "breakdown": []}
+        return _build_fallback_breakdown(posts_by_subreddit, str(exc))
 
 
 async def scan_multiple_subreddits(

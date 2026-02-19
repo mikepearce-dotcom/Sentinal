@@ -445,15 +445,19 @@ const GameDetail = () => {
       setResults(sorted);
       setLatest(sorted[0] || null);
 
-      try {
-        const latestResp = await api.get(`/api/games/${id}/latest-result-detail`);
-        setLatestDetail(latestResp.data || null);
-      } catch (detailErr) {
-        if (detailErr?.response?.status === 404) {
-          setLatestDetail(null);
-        } else {
-          const detail = detailErr?.response?.data?.detail;
-          setPageError(typeof detail === 'string' ? detail : 'Failed to load latest source posts.');
+      if (sorted.length === 0) {
+        setLatestDetail(null);
+      } else {
+        try {
+          const latestResp = await api.get(`/api/games/${id}/latest-result-detail`);
+          setLatestDetail(latestResp.data || null);
+        } catch (detailErr) {
+          if (detailErr?.response?.status === 404) {
+            setLatestDetail(null);
+          } else {
+            const detail = detailErr?.response?.data?.detail;
+            setPageError(typeof detail === 'string' ? detail : 'Failed to load latest source posts.');
+          }
         }
       }
     } catch (err) {
