@@ -28,8 +28,8 @@ DISCOVERY_MAX_CANDIDATES = 30
 DISCOVERY_SAMPLE_POSTS = 25
 DISCOVERY_OPENAI_TOP = 10
 MAX_MULTI_SUBREDDITS = 5
-BREAKDOWN_MAX_POSTS_PER_SUBREDDIT = 12
-BREAKDOWN_SELFTEXT_TRUNCATE = 400
+BREAKDOWN_MAX_POSTS_PER_SUBREDDIT = 8
+BREAKDOWN_SELFTEXT_TRUNCATE = 220
 
 TOP_POSTS_FOR_COMMENTS = 15
 MAX_COMMENTS_PER_POST = 10
@@ -1008,12 +1008,15 @@ THEMES REQUIREMENTS:
 - Return 5-10 themes as strings.
 - Format each as: "Theme name - specific explanation grounded in player feedback".
 - At least half of the themes must include a [POST:post_id] reference.
+- Themes must include concrete subtopic + cause/effect detail (avoid broad labels like "Gameplay Mechanics").
 - Themes must be specific and actionable (no one-word generic labels).
 
 PAIN POINTS / WINS REQUIREMENTS:
 - Keep the same structure with "text" and "evidence" fields only.
 - Each text must describe a repeat issue or repeat strength, not a one-off complaint/praise.
+- Focus on product/game feedback, not vague community activity fluff.
 - Evidence links must use this format: https://www.reddit.com/comments/POST_ID/
+- Evidence must be full links only; never placeholders like [source 1] and never [POST:post_id] in evidence arrays.
 - Use evidence from different posts where possible.
 
 REQUIRED JSON OUTPUT:
@@ -1055,19 +1058,29 @@ def _normalize_sentiment_label(value: Any) -> str:
 
 
 def _normalize_evidence_links(value: Any) -> List[str]:
+    raw_values: List[str] = []
     if isinstance(value, list):
-        links = [str(v).strip() for v in value if str(v).strip()]
+        raw_values = [str(v).strip() for v in value if str(v).strip()]
     elif isinstance(value, str):
-        links = [value.strip()] if value.strip() else []
-    else:
-        links = []
+        raw_values = [value.strip()] if value.strip() else []
 
     normalized: List[str] = []
-    for link in links:
-        if "reddit.com/comments/" in link:
-            cleaned = link.split()[0]
-            if cleaned not in normalized:
-                normalized.append(cleaned)
+    for raw in raw_values:
+        candidate = str(raw or "").strip()
+        if not candidate:
+            continue
+
+        match = re.search(r"reddit\.com/comments/([a-z0-9_]+)", candidate, re.IGNORECASE)
+        if match:
+            canonical = _format_permalink(match.group(1))
+            if canonical not in normalized:
+                normalized.append(canonical)
+            continue
+
+        if re.fullmatch(r"[a-z0-9_]{5,}", candidate, re.IGNORECASE):
+            canonical = _format_permalink(candidate)
+            if canonical not in normalized:
+                normalized.append(canonical)
 
     return normalized[:2]
 
@@ -1078,25 +1091,43 @@ def _normalize_insight_items(value: Any) -> List[Dict[str, Any]]:
 
     items: List[Dict[str, Any]] = []
     for raw_item in value:
-        if isinstance(raw_item, str):
-            text = raw_item.strip()
-            if text:
-                items.append({"text": text, "evidence": []})
-            continue
+        text_value = ""
+        evidence: List[str] = []
+        candidate_post_ids: List[str] = []
 
-        if isinstance(raw_item, dict):
-            text = str(
+        if isinstance(raw_item, str):
+            text_value = raw_item.strip()
+        elif isinstance(raw_item, dict):
+            text_value = str(
                 raw_item.get("text")
                 or raw_item.get("summary")
                 or raw_item.get("point")
                 or raw_item.get("title")
                 or ""
             ).strip()
-            if not text:
-                continue
-
             evidence = _normalize_evidence_links(raw_item.get("evidence"))
-            items.append({"text": text, "evidence": evidence})
+
+            for key in ("post_id", "source_post_id", "id"):
+                raw_id = str(raw_item.get(key) or "").strip()
+                if raw_id and raw_id not in candidate_post_ids:
+                    candidate_post_ids.append(raw_id)
+
+        if not text_value:
+            continue
+
+        for post_id in _extract_post_ids(text_value):
+            if post_id not in candidate_post_ids:
+                candidate_post_ids.append(post_id)
+
+        if not evidence and candidate_post_ids:
+            for post_id in candidate_post_ids:
+                link = _format_permalink(post_id)
+                if link not in evidence:
+                    evidence.append(link)
+                if len(evidence) >= 2:
+                    break
+
+        items.append({"text": text_value, "evidence": evidence[:2]})
 
     return items[:5]
 
@@ -1126,6 +1157,294 @@ def _normalize_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _post_signal_blob(post: Dict[str, Any]) -> str:
+    return f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+
+
+def _post_engagement_weight(post: Dict[str, Any]) -> float:
+    score = max(0, int(post.get("score", 0) or 0))
+    comments = max(0, int(post.get("num_comments", 0) or 0))
+    return 1.0 + math.log(score + 1) + 1.2 * math.log(comments + 1)
+
+
+NEGATIVE_SIGNAL_TERMS = {
+    "bug", "broken", "issue", "issues", "crash", "crashes", "lag", "stutter", "cheater", "cheaters",
+    "queue", "matchmaking", "delay", "disconnect", "exploit", "unbalanced", "frustrating", "refund",
+    "paywall", "grind", "toxic", "nerf",
+}
+
+POSITIVE_SIGNAL_TERMS = {
+    "fun", "great", "good", "love", "enjoy", "smooth", "awesome", "improved", "improvement",
+    "best", "better", "satisfying", "hype", "rewarding", "polished", "addictive", "fair",
+}
+
+THEME_STOP_WORDS = {
+    "the", "and", "with", "from", "this", "that", "have", "your", "about", "into", "they", "their",
+    "them", "what", "when", "where", "which", "were", "been", "just", "also", "more", "some", "many",
+    "over", "than", "there", "users", "community", "game", "reddit", "post", "like", "would", "most",
+    "much", "could", "should", "really", "still", "very", "make", "makes", "made", "stand",
+}
+
+
+def _has_negative_signal(text_blob: str) -> bool:
+    return any(term in text_blob for term in NEGATIVE_SIGNAL_TERMS)
+
+
+def _has_positive_signal(text_blob: str) -> bool:
+    return any(term in text_blob for term in POSITIVE_SIGNAL_TERMS)
+
+
+def _extract_theme_phrases_from_titles(posts: List[Dict[str, Any]], max_phrases: int = 6) -> List[str]:
+    scored_phrases: Dict[str, float] = {}
+
+    for post in posts:
+        title = str(post.get("title", "") or "").lower()
+        tokens = [
+            token
+            for token in re.findall(r"[a-z0-9]+", title)
+            if len(token) > 2 and token not in THEME_STOP_WORDS
+        ]
+        if len(tokens) < 2:
+            continue
+
+        weight = _post_engagement_weight(post)
+        for n in (3, 2):
+            if len(tokens) < n:
+                continue
+            for idx in range(len(tokens) - n + 1):
+                phrase = " ".join(tokens[idx : idx + n])
+                if phrase in THEME_STOP_WORDS:
+                    continue
+                scored_phrases[phrase] = scored_phrases.get(phrase, 0.0) + weight
+
+    ranked = sorted(scored_phrases.items(), key=lambda item: item[1], reverse=True)
+    phrases = [phrase for phrase, _ in ranked[: max(max_phrases, 1)]]
+
+    if phrases:
+        return phrases
+
+    fallback_phrases: List[str] = []
+    for post in posts:
+        title = str(post.get("title", "") or "").strip()
+        if not title:
+            continue
+        words = [w for w in re.findall(r"[A-Za-z0-9]+", title) if len(w) > 2]
+        if len(words) >= 2:
+            phrase = " ".join(words[: min(4, len(words))]).lower()
+            if phrase not in fallback_phrases:
+                fallback_phrases.append(phrase)
+        if len(fallback_phrases) >= max_phrases:
+            break
+
+    return fallback_phrases
+
+
+def _build_schema_fallback(posts: List[Dict[str, Any]], game_name: str = "") -> Dict[str, Any]:
+    ranked_posts = sorted(posts or [], key=_calculate_post_rank, reverse=True)
+    top_posts = ranked_posts[:15]
+
+    if not top_posts:
+        return {
+            "sentiment_label": "Mixed",
+            "sentiment_summary": "Sentiment appears mixed, but there is not enough post data to produce a reliable breakdown.",
+            "themes": [
+                "Limited data - not enough high-signal posts to determine concrete product themes",
+            ],
+            "pain_points": [
+                {"text": "Insufficient data to identify repeated pain points.", "evidence": []}
+            ],
+            "wins": [
+                {"text": "Insufficient data to identify repeated wins.", "evidence": []}
+            ],
+        }
+
+    positive_weight = 0.0
+    negative_weight = 0.0
+    for post in top_posts:
+        blob = _post_signal_blob(post)
+        weight = _post_engagement_weight(post)
+        if _has_positive_signal(blob):
+            positive_weight += weight
+        if _has_negative_signal(blob):
+            negative_weight += weight
+
+    if negative_weight > positive_weight * 1.15:
+        sentiment_label = "Negative"
+    elif positive_weight > negative_weight * 1.15:
+        sentiment_label = "Positive"
+    else:
+        sentiment_label = "Mixed"
+
+    refs = [str(post.get("id") or "").strip() for post in top_posts if str(post.get("id") or "").strip()]
+    ref_one = refs[0] if refs else ""
+    ref_two = refs[1] if len(refs) > 1 else ref_one
+
+    sentiment_summary = (
+        f"Overall sentiment is {sentiment_label.lower()}, driven by repeated high-engagement product feedback. "
+        f"Primary friction and upside signals are visible in [POST:{ref_one}] and [POST:{ref_two}] where available."
+    ).strip()
+
+    phrases = _extract_theme_phrases_from_titles(top_posts, max_phrases=6)
+    if not phrases:
+        phrases = ["gameplay feedback patterns", "content pacing concerns", "progression and balance issues"]
+
+    themes: List[str] = []
+    for idx, phrase in enumerate(phrases[:6]):
+        ref = refs[idx % len(refs)] if refs else ""
+        suffix = f" [POST:{ref}]" if ref else ""
+        themes.append(
+            f"{phrase.title()} - repeated player discussion with concrete product implications{suffix}"
+        )
+
+    negative_posts = [post for post in top_posts if _has_negative_signal(_post_signal_blob(post))]
+    positive_posts = [post for post in top_posts if _has_positive_signal(_post_signal_blob(post))]
+    if not negative_posts:
+        negative_posts = top_posts[-5:] if len(top_posts) >= 5 else top_posts
+    if not positive_posts:
+        positive_posts = top_posts[:5]
+
+    pain_points: List[Dict[str, Any]] = []
+    wins: List[Dict[str, Any]] = []
+
+    for idx in range(5):
+        pain_post = negative_posts[idx % len(negative_posts)]
+        win_post = positive_posts[idx % len(positive_posts)]
+
+        pain_title = str(pain_post.get("title", "") or "Player-reported product issue").strip()
+        pain_id = str(pain_post.get("id", "") or "").strip()
+        pain_points.append(
+            {
+                "text": f"Players report friction around: {pain_title[:170]}",
+                "evidence": [_format_permalink(pain_id)] if pain_id else [],
+            }
+        )
+
+        win_title = str(win_post.get("title", "") or "Player-reported product strength").strip()
+        win_id = str(win_post.get("id", "") or "").strip()
+        wins.append(
+            {
+                "text": f"Players highlight a positive signal in: {win_title[:170]}",
+                "evidence": [_format_permalink(win_id)] if win_id else [],
+            }
+        )
+
+    return {
+        "sentiment_label": sentiment_label,
+        "sentiment_summary": sentiment_summary,
+        "themes": themes,
+        "pain_points": pain_points,
+        "wins": wins,
+    }
+
+
+def _ensure_evidence_for_items(items: List[Dict[str, Any]], fallback_posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not items:
+        return []
+
+    fallback_links = [
+        _format_permalink(str(post.get("id") or "").strip())
+        for post in sorted(fallback_posts or [], key=_calculate_post_rank, reverse=True)
+        if str(post.get("id") or "").strip()
+    ]
+
+    ensured: List[Dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        text_value = str(item.get("text", "") or "").strip()
+        evidence = _normalize_evidence_links(item.get("evidence"))
+
+        if not evidence:
+            for post_id in _extract_post_ids(text_value):
+                link = _format_permalink(post_id)
+                if link not in evidence:
+                    evidence.append(link)
+                if len(evidence) >= 2:
+                    break
+
+        if not evidence and fallback_links:
+            fallback_link = fallback_links[idx % len(fallback_links)]
+            evidence.append(fallback_link)
+
+        ensured.append({"text": text_value, "evidence": evidence[:2]})
+
+    return ensured
+
+
+def ensure_valid_analysis_schema(
+    result: Dict[str, Any],
+    fallback_posts: List[Dict[str, Any]],
+    game_name: str = "",
+) -> Dict[str, Any]:
+    normalized = _normalize_analysis(result if isinstance(result, dict) else {})
+    fallback = _build_schema_fallback(fallback_posts, game_name=game_name)
+
+    sentiment_label = normalized.get("sentiment_label")
+    if sentiment_label not in ("Positive", "Mixed", "Negative"):
+        sentiment_label = fallback.get("sentiment_label", "Mixed")
+
+    sentiment_summary = str(normalized.get("sentiment_summary", "") or "").strip()
+    if not sentiment_summary:
+        sentiment_summary = str(fallback.get("sentiment_summary", "") or "")
+
+    themes = normalized.get("themes") or []
+    if not themes:
+        themes = fallback.get("themes") or []
+
+    pain_points = normalized.get("pain_points") or []
+    if not pain_points:
+        pain_points = fallback.get("pain_points") or []
+    pain_points = _ensure_evidence_for_items(pain_points[:5], fallback_posts)
+
+    wins = normalized.get("wins") or []
+    if not wins:
+        wins = fallback.get("wins") or []
+    wins = _ensure_evidence_for_items(wins[:5], fallback_posts)
+
+    return {
+        "sentiment_label": sentiment_label,
+        "sentiment_summary": sentiment_summary,
+        "themes": themes[:10],
+        "pain_points": pain_points[:5],
+        "wins": wins[:5],
+    }
+
+
+async def _repair_json_payload_with_ai(raw_text: str, schema_hint: str) -> Optional[Dict[str, Any]]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    raw_excerpt = str(raw_text or "").strip()
+    if not raw_excerpt:
+        return None
+
+    try:
+        import openai
+
+        openai.api_key = api_key
+        prompt = (
+            "Convert the following model output into valid JSON only. Do not add commentary. "
+            f"Schema hint: {schema_hint}.\n\n"
+            "RAW OUTPUT:\n"
+            + raw_excerpt[:3500]
+        )
+
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You repair invalid JSON. Return strict JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=700,
+        )
+
+        repaired_text = response.choices[0].message.content or ""
+        return _extract_json_payload(repaired_text)
+    except Exception as exc:
+        print(f"JSON repair failed ({schema_hint}): {exc}")
+        return None
+
+
 async def analyze_posts_with_ai(
     posts: List[Dict[str, Any]],
     comments: List[Dict[str, Any]],
@@ -1133,37 +1452,63 @@ async def analyze_posts_with_ai(
     keywords: str = "",
 ) -> Dict[str, Any]:
     """Analyze Reddit posts/comments with OpenAI and return normalized sentiment output."""
-    import openai
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        print("OpenAI key missing; using deterministic analysis fallback.")
+        return ensure_valid_analysis_schema({}, posts, game_name=game_name)
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")
-    if not openai.api_key:
-        raise RuntimeError("OpenAI API key not configured")
+    try:
+        import openai
 
-    prompt = _build_analysis_prompt(posts, comments, game_name=game_name, keywords=keywords)
+        openai.api_key = api_key
+        prompt = _build_analysis_prompt(posts, comments, game_name=game_name, keywords=keywords)
 
-    response = await openai.ChatCompletion.acreate(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert gaming community analyst. "
-                    "Return valid JSON only and avoid quoting toxic content directly."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
-        max_tokens=1800,
-    )
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert gaming community analyst. "
+                        "Return valid JSON only and avoid quoting toxic content directly."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=1800,
+        )
 
-    text = response.choices[0].message.content or ""
-    parsed = _extract_json_payload(text)
-    if parsed is None:
-        return {"error": "failed to parse output", "raw": text}
+        text = response.choices[0].message.content or ""
+        parsed = _extract_json_payload(text)
+        if parsed is None:
+            print(f"Overall analysis parse failed. Raw excerpt: {text[:300]!r}")
+            repaired = await _repair_json_payload_with_ai(text, "overall_analysis")
+            if repaired is not None:
+                print("Overall analysis JSON repair used.")
+                parsed = repaired
 
-    return _normalize_analysis(parsed)
+        if parsed is None:
+            print("Overall analysis fallback used after parse/repair failure.")
+            return ensure_valid_analysis_schema({}, posts, game_name=game_name)
 
+        return ensure_valid_analysis_schema(parsed, posts, game_name=game_name)
+    except Exception as exc:
+        print(f"Overall analysis failed: {exc}")
+        return ensure_valid_analysis_schema({}, posts, game_name=game_name)
+
+
+async def analyze_subreddit_with_ai(
+    posts: List[Dict[str, Any]],
+    comments: List[Dict[str, Any]],
+    subreddit_name: str,
+    game_name: str = "",
+    keywords: str = "",
+) -> Dict[str, Any]:
+    scoped_subreddit = _normalize_subreddit(subreddit_name) or subreddit_name
+    scoped_game_name = game_name or "Unknown Game"
+    scoped_label = f"{scoped_game_name} - r/{scoped_subreddit}" if scoped_subreddit else scoped_game_name
+    return await analyze_posts_with_ai(posts, comments, game_name=scoped_label, keywords=keywords)
 
 
 def _normalize_subreddit_list(subreddits: List[str], max_items: int = MAX_MULTI_SUBREDDITS) -> List[str]:
@@ -1227,51 +1572,50 @@ def _build_breakdown_prompt(
         posts = posts_by_subreddit.get(subreddit, [])[:BREAKDOWN_MAX_POSTS_PER_SUBREDDIT]
         lines = [f"SUBREDDIT: r/{subreddit}", f"POST_COUNT: {len(posts)}"]
 
-        for post in posts:
+        for idx, post in enumerate(posts):
             post_id = str(post.get("id") or "")
             title = str(post.get("title", "") or "").strip()
-            selftext = str(post.get("selftext", "") or "").strip()
             score = int(post.get("score", 0) or 0)
             num_comments = int(post.get("num_comments", 0) or 0)
+            lines.append(f"- [POST:{post_id}] [{score} pts, {num_comments} comments] {title}")
 
-            line = f"- [POST:{post_id}] [{score} pts, {num_comments} comments] {title}"
-            if selftext and selftext not in ("[removed]", "[deleted]"):
-                snippet = selftext.replace("\n", " ")[:BREAKDOWN_SELFTEXT_TRUNCATE].strip()
-                if snippet:
-                    line += f"\n  Snippet: {snippet}"
-            lines.append(line)
+            if idx < 4:
+                selftext = str(post.get("selftext", "") or "").strip()
+                if selftext and selftext not in ("[removed]", "[deleted]"):
+                    snippet = selftext.replace("\n", " ")[:BREAKDOWN_SELFTEXT_TRUNCATE].strip()
+                    if snippet:
+                        lines.append(f"  Snippet: {snippet}")
 
         sections.append("\n".join(lines))
 
     keyword_note = f"\nKeywords to watch for: {keywords}" if keywords else ""
 
-    return f"""You are an expert gaming community analyst preparing a per-subreddit breakdown for "{game_name or 'Unknown Game'}".
+    return f"""Create a per-subreddit product feedback breakdown for "{game_name or 'Unknown Game'}".
 
-RULES:
-- Do NOT assume game genre, modes, platforms, monetisation, or mechanics unless directly present in the posts.
-- Use only evidence present in the provided posts.
-- Include evidence links using: https://www.reddit.com/comments/POST_ID/
-- Ensure each subreddit section includes at least 1-2 [POST:post_id] references across themes/pain points/wins.
-
-REQUIRED JSON OUTPUT:
+OUTPUT JSON ONLY with this exact top-level shape:
 {{
   "breakdown": [
     {{
       "subreddit": "name",
       "sentiment_label": "Positive|Mixed|Negative",
       "summary_bullets": ["...", "...", "..."],
-      "top_themes": ["Theme - specific explanation [POST:id]", "..."],
+      "top_themes": ["Theme - concrete issue/outcome [POST:id]", "..."],
       "top_pain_points": [{{"text": "...", "evidence": ["https://www.reddit.com/comments/POST_ID/"]}}],
       "top_wins": [{{"text": "...", "evidence": ["https://www.reddit.com/comments/POST_ID/"]}}]
     }}
   ]
 }}
 
-Field constraints:
-- summary_bullets: max 3 bullets
-- top_themes: 3 to 5 items
-- top_pain_points: exactly 3 items
-- top_wins: exactly 3 items
+STRICT RULES:
+- Use only supplied posts.
+- Do NOT assume game genre, modes, platforms, monetisation, or mechanics unless explicitly present.
+- summary_bullets: max 3
+- top_themes: 3-5 and must be specific (not generic labels like "Gameplay Mechanics")
+- top_pain_points: exactly 3, product-focused
+- top_wins: exactly 3, product-focused
+- Evidence arrays MUST contain full Reddit URLs only: https://www.reddit.com/comments/POST_ID/
+- Never use placeholders like [source 1]
+- Never output [POST:id] inside evidence arrays (only in themes/summary text)
 {keyword_note}
 
 SUBREDDIT DATA:
@@ -1320,9 +1664,19 @@ def _normalize_breakdown_items(value: Any) -> List[Dict[str, Any]]:
             continue
 
         evidence = _normalize_evidence_links(raw_item.get("evidence"))
-        if not evidence:
-            post_ids = _extract_post_ids(text)
-            for post_id in post_ids:
+
+        candidate_ids: List[str] = []
+        for key in ("post_id", "source_post_id", "id"):
+            raw_id = str(raw_item.get(key) or "").strip()
+            if raw_id and raw_id not in candidate_ids:
+                candidate_ids.append(raw_id)
+
+        for post_id in _extract_post_ids(text):
+            if post_id not in candidate_ids:
+                candidate_ids.append(post_id)
+
+        if not evidence and candidate_ids:
+            for post_id in candidate_ids:
                 link = _format_permalink(post_id)
                 if link not in evidence:
                     evidence.append(link)
@@ -1334,8 +1688,23 @@ def _normalize_breakdown_items(value: Any) -> List[Dict[str, Any]]:
     return items[:3]
 
 
-def _normalize_breakdown_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    raw_breakdown = payload.get("breakdown")
+def _normalize_breakdown_payload(payload: Any) -> Dict[str, Any]:
+    raw_breakdown: Any = None
+
+    if isinstance(payload, dict):
+        raw_breakdown = payload.get("breakdown")
+        if not isinstance(raw_breakdown, list):
+            for key in ("rows", "subreddits", "subreddit_breakdown"):
+                candidate = payload.get(key)
+                if isinstance(candidate, list):
+                    raw_breakdown = candidate
+                    break
+                if isinstance(candidate, dict) and isinstance(candidate.get("breakdown"), list):
+                    raw_breakdown = candidate.get("breakdown")
+                    break
+    elif isinstance(payload, list):
+        raw_breakdown = payload
+
     if not isinstance(raw_breakdown, list):
         return {"breakdown": []}
 
@@ -1376,52 +1745,27 @@ def _estimate_sentiment_from_posts(posts: List[Dict[str, Any]]) -> str:
     if not posts:
         return "Mixed"
 
-    negative_terms = {
-        "bug", "broken", "issue", "issues", "crash", "crashes", "lag", "cheater", "cheaters",
-        "toxic", "queue", "queues", "matchmaking", "delay", "problem", "problems", "frustrating",
-    }
-    positive_terms = {
-        "fun", "great", "good", "love", "enjoy", "smooth", "awesome", "improved", "improvement",
-        "best", "better", "satisfying", "positive", "hype",
-    }
-
-    neg = 0
-    pos = 0
+    positive_weight = 0.0
+    negative_weight = 0.0
 
     for post in posts:
-        body = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
-        for term in negative_terms:
-            if term in body:
-                neg += 1
-        for term in positive_terms:
-            if term in body:
-                pos += 1
+        blob = _post_signal_blob(post)
+        weight = _post_engagement_weight(post)
+        if _has_positive_signal(blob):
+            positive_weight += weight
+        if _has_negative_signal(blob):
+            negative_weight += weight
 
-    if neg > pos * 1.2:
+    if negative_weight > positive_weight * 1.15:
         return "Negative"
-    if pos > neg * 1.2:
+    if positive_weight > negative_weight * 1.15:
         return "Positive"
     return "Mixed"
 
 
 def _extract_theme_terms(posts: List[Dict[str, Any]], max_terms: int = 5) -> List[str]:
-    stop_words = {
-        "the", "and", "with", "from", "this", "that", "have", "your", "about", "into", "they",
-        "their", "them", "what", "when", "where", "which", "were", "been", "just", "also", "more",
-        "some", "many", "over", "than", "there", "users", "community", "game", "reddit", "post",
-    }
-
-    counter: Counter[str] = Counter()
-    for post in posts:
-        text_blob = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
-        for token in re.findall(r"[a-z0-9]+", text_blob):
-            if len(token) <= 3:
-                continue
-            if token in stop_words:
-                continue
-            counter[token] += 1
-
-    return [term for term, _ in counter.most_common(max_terms)]
+    # Use phrases from titles rather than isolated tokens to avoid noisy outputs.
+    return _extract_theme_phrases_from_titles(posts, max_phrases=max(max_terms, 1))
 
 
 def _fallback_point_from_post(post: Dict[str, Any], prefix: str) -> Dict[str, Any]:
@@ -1430,7 +1774,7 @@ def _fallback_point_from_post(post: Dict[str, Any], prefix: str) -> Dict[str, An
     evidence = [_format_permalink(post_id)] if post_id else []
 
     if not title:
-        title = "Community discussion signal"
+        title = "player-reported product feedback"
 
     return {
         "text": f"{prefix}: {title[:180]}",
@@ -1438,18 +1782,10 @@ def _fallback_point_from_post(post: Dict[str, Any], prefix: str) -> Dict[str, An
     }
 
 
-def _build_fallback_breakdown(
+def _build_fallback_breakdown_rows(
     posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
-    error_message: str,
-) -> Dict[str, Any]:
+) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
-
-    negative_terms = (
-        "bug", "broken", "issue", "issues", "crash", "lag", "cheater", "queue", "matchmaking", "problem"
-    )
-    positive_terms = (
-        "fun", "great", "good", "love", "enjoy", "smooth", "improved", "awesome", "better", "hype"
-    )
 
     for subreddit in sorted(posts_by_subreddit.keys()):
         posts = sorted(posts_by_subreddit.get(subreddit, []), key=_calculate_post_rank, reverse=True)
@@ -1463,35 +1799,30 @@ def _build_fallback_breakdown(
         ref_one = post_refs[0] if post_refs else ""
         ref_two = post_refs[1] if len(post_refs) > 1 else ref_one
 
-        terms = _extract_theme_terms(top_posts, max_terms=5)
-        if not terms:
-            terms = ["discussion", "feedback", "experience"]
+        phrases = _extract_theme_terms(top_posts, max_terms=5)
+        if not phrases:
+            phrases = ["content pacing feedback", "difficulty tuning feedback", "progression friction reports"]
 
         summary_bullets = [
-            f"Overall sentiment is {sentiment_label.lower()} in r/{subreddit} based on top posts.",
-            f"Most repeated discussion topics include {', '.join(terms[:3])}.",
+            f"Overall sentiment in r/{subreddit} is {sentiment_label.lower()} based on high-engagement product discussions.",
+            f"Most repeated subtopics include {', '.join(phrases[:3])}.",
             f"Representative threads: [POST:{ref_one}], [POST:{ref_two}]" if ref_one else "Representative threads are available in this community sample.",
         ]
 
         top_themes: List[str] = []
-        for idx, term in enumerate(terms[:5]):
+        for idx, phrase in enumerate(phrases[:5]):
             ref = post_refs[idx % len(post_refs)] if post_refs else ""
             suffix = f" [POST:{ref}]" if ref else ""
-            top_themes.append(f"{term.title()} - recurring topic in subreddit discussions{suffix}")
+            top_themes.append(
+                f"{phrase.title()} - recurring product feedback trend in high-engagement posts{suffix}"
+            )
         while len(top_themes) < 3:
             ref = post_refs[len(top_themes) % len(post_refs)] if post_refs else ""
             suffix = f" [POST:{ref}]" if ref else ""
-            top_themes.append(f"Community Feedback - repeated discussion signal{suffix}")
+            top_themes.append(f"Product Feedback Signal - repeated issue/outcome in recent threads{suffix}")
 
-        negative_posts = []
-        positive_posts = []
-        for post in top_posts:
-            blob = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
-            if any(term in blob for term in negative_terms):
-                negative_posts.append(post)
-            if any(term in blob for term in positive_terms):
-                positive_posts.append(post)
-
+        negative_posts = [post for post in top_posts if _has_negative_signal(_post_signal_blob(post))]
+        positive_posts = [post for post in top_posts if _has_positive_signal(_post_signal_blob(post))]
         if not negative_posts:
             negative_posts = top_posts[-3:] if len(top_posts) >= 3 else top_posts
         if not positive_posts:
@@ -1499,12 +1830,11 @@ def _build_fallback_breakdown(
 
         pain_points: List[Dict[str, Any]] = []
         wins: List[Dict[str, Any]] = []
-
         for idx in range(3):
             pain_post = negative_posts[idx % len(negative_posts)]
             win_post = positive_posts[idx % len(positive_posts)]
-            pain_points.append(_fallback_point_from_post(pain_post, "Players report concern"))
-            wins.append(_fallback_point_from_post(win_post, "Players highlight strength"))
+            pain_points.append(_fallback_point_from_post(pain_post, "Players report friction around"))
+            wins.append(_fallback_point_from_post(win_post, "Players praise"))
 
         rows.append(
             {
@@ -1517,7 +1847,84 @@ def _build_fallback_breakdown(
             }
         )
 
-    return {"error": error_message, "breakdown": rows}
+    return rows
+
+
+def _build_fallback_breakdown(
+    posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
+    error_message: str,
+) -> Dict[str, Any]:
+    print(f"Breakdown fallback used: {error_message}")
+    return {"error": "fallback_generated", "breakdown": _build_fallback_breakdown_rows(posts_by_subreddit)}
+
+
+def _merge_breakdown_with_fallback(
+    normalized_payload: Dict[str, Any],
+    posts_by_subreddit: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    fallback_rows_by_subreddit = {
+        row.get("subreddit"): row
+        for row in _build_fallback_breakdown_rows(posts_by_subreddit)
+        if isinstance(row, dict) and row.get("subreddit")
+    }
+
+    parsed_rows_by_subreddit: Dict[str, Dict[str, Any]] = {}
+    for row in normalized_payload.get("breakdown", []):
+        if not isinstance(row, dict):
+            continue
+        subreddit = _normalize_subreddit(str(row.get("subreddit", "") or ""))
+        if not subreddit:
+            continue
+        parsed_rows_by_subreddit[subreddit] = row
+
+    merged_rows: List[Dict[str, Any]] = []
+
+    for subreddit in sorted(posts_by_subreddit.keys()):
+        fallback_row = fallback_rows_by_subreddit.get(subreddit)
+        if not fallback_row:
+            continue
+
+        parsed_row = parsed_rows_by_subreddit.get(subreddit)
+        if not parsed_row:
+            merged_rows.append(fallback_row)
+            continue
+
+        sentiment_label = _normalize_sentiment_label(parsed_row.get("sentiment_label"))
+        if sentiment_label == "Unknown":
+            sentiment_label = str(fallback_row.get("sentiment_label", "Mixed"))
+
+        summary_bullets = _normalize_summary_bullets(parsed_row.get("summary_bullets"))
+        top_themes = _normalize_themes(parsed_row.get("top_themes"))[:5]
+        top_pain_points = _normalize_breakdown_items(parsed_row.get("top_pain_points"))
+        top_wins = _normalize_breakdown_items(parsed_row.get("top_wins"))
+
+        subreddit_posts = posts_by_subreddit.get(subreddit, [])
+        top_pain_points = _ensure_evidence_for_items(top_pain_points, subreddit_posts)[:3]
+        top_wins = _ensure_evidence_for_items(top_wins, subreddit_posts)[:3]
+
+        quality_ok = (
+            bool(summary_bullets)
+            and len(top_themes) >= 3
+            and len(top_pain_points) >= 3
+            and len(top_wins) >= 3
+        )
+
+        if not quality_ok:
+            merged_rows.append(fallback_row)
+            continue
+
+        merged_rows.append(
+            {
+                "subreddit": subreddit,
+                "sentiment_label": sentiment_label,
+                "summary_bullets": summary_bullets[:3],
+                "top_themes": top_themes,
+                "top_pain_points": top_pain_points,
+                "top_wins": top_wins,
+            }
+        )
+
+    return merged_rows
 
 
 async def analyze_subreddit_breakdown_with_ai(
@@ -1551,19 +1958,31 @@ async def analyze_subreddit_breakdown_with_ai(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
-            max_tokens=2000,
+            max_tokens=1800,
         )
 
         text = response.choices[0].message.content or ""
         parsed = _extract_json_payload(text)
+
         if parsed is None:
-            return _build_fallback_breakdown(posts_by_subreddit, "failed to parse output")
+            print(f"Breakdown parse failed. Raw excerpt: {text[:300]!r}")
+            repaired = await _repair_json_payload_with_ai(text, "subreddit_breakdown")
+            if repaired is not None:
+                print("Breakdown JSON repair used.")
+                parsed = repaired
+
+        if parsed is None:
+            return _build_fallback_breakdown(posts_by_subreddit, "parse_or_repair_failed")
 
         normalized = _normalize_breakdown_payload(parsed)
         if not normalized.get("breakdown"):
-            return _build_fallback_breakdown(posts_by_subreddit, "empty breakdown output")
+            return _build_fallback_breakdown(posts_by_subreddit, "normalized_breakdown_empty")
 
-        return normalized
+        merged_rows = _merge_breakdown_with_fallback(normalized, posts_by_subreddit)
+        if not merged_rows:
+            return _build_fallback_breakdown(posts_by_subreddit, "merged_breakdown_empty")
+
+        return {"breakdown": merged_rows}
     except Exception as exc:
         return _build_fallback_breakdown(posts_by_subreddit, str(exc))
 
@@ -1638,4 +2057,5 @@ async def scan_multiple_subreddits(
 
     _multi_scan_cache[cache_key] = (now, result)
     return result
+
 

@@ -891,7 +891,7 @@ const GameDetail = () => {
 
               {multiScanResult?.subreddit_breakdown?.error ? (
                 <p className="text-sm text-amber-300 mb-4">
-                  Breakdown fallback: {String(multiScanResult.subreddit_breakdown.error)}
+                  Using deterministic subreddit breakdown fallback while AI formatting is unavailable.
                 </p>
               ) : null}
 
@@ -1150,3 +1150,4 @@ const GameDetail = () => {
 };
 
 export default GameDetail;
+
