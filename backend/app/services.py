@@ -2195,11 +2195,20 @@ async def analyze_subreddit_breakdown_with_ai(
     return {"breakdown": rows}
 
 
+def _public_multi_scan_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "overall": result.get("overall") or {},
+        "meta": result.get("meta") or {},
+        "subreddit_breakdown": result.get("subreddit_breakdown") or {"breakdown": []},
+    }
+
+
 async def scan_multiple_subreddits(
     subreddits: List[str],
     game_name: str = "",
     keywords: str = "",
     include_breakdown: bool = True,
+    include_internal: bool = False,
 ) -> Dict[str, Any]:
     normalized_subreddits = _normalize_subreddit_list(subreddits, max_items=MAX_MULTI_SUBREDDITS)
     if not normalized_subreddits:
@@ -2215,7 +2224,10 @@ async def scan_multiple_subreddits(
     now = time.time()
     cached = _multi_scan_cache.get(cache_key)
     if cached and now - cached[0] < MULTI_SCAN_CACHE_TTL:
-        return cached[1]
+        cached_result = cached[1]
+        if include_internal:
+            return cached_result
+        return _public_multi_scan_result(cached_result)
 
     posts = await fetch_posts_for_subreddits(
         normalized_subreddits,
@@ -2261,9 +2273,13 @@ async def scan_multiple_subreddits(
             "last_scanned": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         },
         "subreddit_breakdown": subreddit_breakdown,
+        "_posts": posts,
+        "_comments": comments,
     }
 
     _multi_scan_cache[cache_key] = (now, result)
-    return result
+    if include_internal:
+        return result
+    return _public_multi_scan_result(result)
 
 

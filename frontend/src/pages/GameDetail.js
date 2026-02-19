@@ -589,6 +589,7 @@ const GameDetail = () => {
     try {
       const payload = {
         subreddits: selectedSubreddits,
+        game_id: id,
         game_name: String(game?.name || ''),
         keywords: String(game?.keywords || ''),
         include_breakdown: true,
@@ -596,6 +597,7 @@ const GameDetail = () => {
 
       const resp = await api.post('/api/games/multi-scan', payload);
       setMultiScanResult(resp?.data || null);
+      await loadPage();
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setMultiScanError(typeof detail === 'string' ? detail : 'Combined scan failed.');
@@ -1005,7 +1007,9 @@ const GameDetail = () => {
           </>
         ) : null}
 
-        <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+        {multiScanResult ? null : (
+          <>
+            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           <MetricCard label="Posts Analysed" value={postsAnalyzed} />
           <MetricCard label="Last 7 Days" value={postsLast7Days} />
           <MetricCard label="Comments" value={commentsAnalyzed} />
@@ -1066,6 +1070,8 @@ const GameDetail = () => {
             tone="success"
           />
         </section>
+          </>
+        )}
 
         <section className="card-glass p-6">
           <div className="flex items-center justify-between mb-4">

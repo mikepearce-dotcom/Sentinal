@@ -14,6 +14,7 @@ router = APIRouter()
 
 class MultiScanRequest(BaseModel):
     subreddits: List[str] = Field(default_factory=list, min_items=1, max_items=5)
+    game_id: str = ""
     game_name: str = ""
     keywords: str = ""
     include_breakdown: bool = True
@@ -56,6 +57,7 @@ async def run_multi_scan(payload: MultiScanRequest, user=Depends(get_current_use
             game_name=str(payload.game_name or ""),
             keywords=str(payload.keywords or ""),
             include_breakdown=bool(payload.include_breakdown),
+            include_internal=bool(str(payload.game_id or "").strip()),
         )
     except RuntimeError as exc:
         detail = str(exc)
@@ -68,7 +70,30 @@ async def run_multi_scan(payload: MultiScanRequest, user=Depends(get_current_use
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Multi scan failed: {exc}")
 
-    return result
+    game_id = str(payload.game_id or "").strip()
+    if game_id:
+        game = await database.db.tracked_games.find_one({"_id": game_id, "user_id": user["user_id"]})
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+
+        scan_doc = {
+            "_id": str(uuid.uuid4()),
+            "game_id": game_id,
+            "created_at": datetime.utcnow(),
+            "posts": _safe_list(result.get("_posts")),
+            "comments": _safe_list(result.get("_comments")),
+            "analysis": result.get("overall") or {},
+            "scan_type": "multi",
+            "subreddit_breakdown": result.get("subreddit_breakdown") or {"breakdown": []},
+            "meta": result.get("meta") or {},
+        }
+        await database.db.scan_results.insert_one(scan_doc)
+
+    return {
+        "overall": result.get("overall") or {},
+        "meta": result.get("meta") or {},
+        "subreddit_breakdown": result.get("subreddit_breakdown") or {"breakdown": []},
+    }
 
 
 @router.post("/{id}/scan")
