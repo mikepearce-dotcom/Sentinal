@@ -10,11 +10,11 @@ import httpx
 
 ARCTIC_SHIFT_BASE = "https://arctic-shift.photon-reddit.com"
 
-POST_FIELDS = "id,title,selftext,created_utc,score,num_comments,author"
+POST_FIELDS = "id,title,selftext,created_utc,score,num_comments,author,subreddit"
 COMMENT_FIELDS = "id,body,created_utc,score,author,parent_id"
 
 CACHE_TTL = 600  # 10 minutes
-WINDOWS: List[Tuple[str, str]] = [("8d", "36h"), ("8d", "12h"), ("8d", "0h")]
+WINDOWS: List[Tuple[str, str]] = [("48h", "0h"), ("8d", "48h"), ("30d", "8d")]
 
 MAX_POSTS_FINAL = 100
 MAX_POSTS_PER_AUTHOR = 3
@@ -113,6 +113,7 @@ def _map_post(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "score": item.get("score", 0) or 0,
         "num_comments": item.get("num_comments", 0) or 0,
         "author": item.get("author", "") or "",
+        "subreddit": item.get("subreddit", "") or "",
         "permalink": _format_permalink(str(post_id)),
     }
 
@@ -191,7 +192,13 @@ def _calculate_post_rank(post: Dict[str, Any]) -> float:
 
     engagement = math.log(score + 1) + 2 * math.log(num_comments + 1)
     text_bonus = min(len(selftext) / 500.0, 1.0)
-    return engagement + 0.35 * text_bonus
+    rank = engagement + 0.35 * text_bonus
+
+    # Small penalty for very low-signal posts with no discussion depth.
+    if num_comments == 0 and len(selftext) < 100:
+        rank -= 0.25
+
+    return rank
 
 
 def _apply_diversity_and_recency(posts: List[Dict[str, Any]], max_posts: int) -> List[Dict[str, Any]]:
@@ -285,7 +292,16 @@ def _select_best_comments(comments: List[Dict[str, Any]], max_count: int) -> Lis
     )
 
     selected: List[Dict[str, Any]] = []
-    for item in sorted_comments[:max_count]:
+    author_counts: Dict[str, int] = {}
+
+    for item in sorted_comments:
+        if len(selected) >= max_count:
+            break
+
+        author = str(item.get("author", "") or "").lower()
+        if author and author_counts.get(author, 0) >= 2:
+            continue
+
         selected.append(
             {
                 "id": str(item.get("id") or ""),
@@ -295,6 +311,9 @@ def _select_best_comments(comments: List[Dict[str, Any]], max_count: int) -> Lis
                 "author": str(item.get("author", "") or ""),
             }
         )
+
+        if author:
+            author_counts[author] = author_counts.get(author, 0) + 1
 
     return selected
 
@@ -472,20 +491,49 @@ def _build_analysis_prompt(
             comment_lines.append(f"- [POST:{source_post}] [{score} pts] {body}")
         comments_text = "\n".join(comment_lines)
 
+    subreddit_name = "Unknown"
+    for post in posts:
+        value = str(post.get("subreddit", "") or "").strip()
+        if value:
+            subreddit_name = value if value.lower().startswith("r/") else f"r/{value}"
+            break
+
+    now_ts = time.time()
+    recent_cutoff = now_ts - (3 * 24 * 60 * 60)
+    recent_posts = sum(1 for p in posts if float(p.get("created_utc", 0) or 0) >= recent_cutoff)
+    older_posts = max(0, len(posts) - recent_posts)
+
     keyword_note = f"\nKeywords to watch for: {keywords}" if keywords else ""
 
-    return f"""Analyze these {len(posts)} Reddit posts and {len(comments)} top comment samples about the game \"{game_name or 'Unknown Game'}\".
+    return f"""Analyze these {len(posts)} Reddit posts and {len(comments)} top comment samples about the game "{game_name or 'Unknown Game'}".
 
 IMPORTANT INSTRUCTIONS:
+- Do NOT assume PvP, PvE, modes, platforms, or monetisation unless directly stated in the posts/comments.
 - Ignore toxic language and personal attacks. Summarize professionally.
 - If a keyword list is provided, prioritize those topics in themes and sentiment context.
-- For pain_points and wins, include 1-2 evidence links each using the post IDs in this format:
-  https://www.reddit.com/comments/POST_ID/
+
+SENTIMENT SUMMARY REQUIREMENTS (2-3 sentences):
+- Sentence 1: overall sentiment and the primary driver.
+- Sentence 2: top two concrete pain points.
+- Sentence 3 (optional): strongest positive or retention driver.
+- Include at least two [POST:post_id] references inside sentiment_summary.
+
+THEMES REQUIREMENTS:
+- Return 5-10 themes as strings.
+- Format each as: "Theme name - specific explanation grounded in player feedback".
+- At least half of the themes must include a [POST:post_id] reference.
+- Themes must be specific and actionable (no one-word generic labels).
+
+PAIN POINTS / WINS REQUIREMENTS:
+- Keep the same structure with "text" and "evidence" fields only.
+- Each text must describe a repeat issue or repeat strength, not a one-off complaint/praise.
+- Evidence links must use this format: https://www.reddit.com/comments/POST_ID/
+- Use evidence from different posts where possible.
 
 REQUIRED JSON OUTPUT:
-1. sentiment_label: \"Positive\", \"Mixed\", or \"Negative\"
-2. sentiment_summary: 2-3 sentences
-3. themes: array of 5-10 topic strings
+1. sentiment_label: "Positive", "Mixed", or "Negative"
+2. sentiment_summary: 2-3 sentences with required structure
+3. themes: array of 5-10 specific strings
 4. pain_points: array of exactly 5 objects with:
    - text: string
    - evidence: array of 1-2 Reddit links
@@ -493,6 +541,12 @@ REQUIRED JSON OUTPUT:
    - text: string
    - evidence: array of 1-2 Reddit links
 {keyword_note}
+
+SCAN CONTEXT:
+- Subreddit: {subreddit_name}
+- Posts analyzed: {len(posts)}
+- Comments sampled: {len(comments)}
+- Time coverage: {recent_posts} recent posts (last 3 days), {older_posts} older posts
 
 POSTS:
 {chr(10).join(post_summaries)}
@@ -614,7 +668,7 @@ async def analyze_posts_with_ai(
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
-        max_tokens=1200,
+        max_tokens=1800,
     )
 
     text = response.choices[0].message.content or ""
@@ -623,3 +677,4 @@ async def analyze_posts_with_ai(
         return {"error": "failed to parse output", "raw": text}
 
     return _normalize_analysis(parsed)
+
