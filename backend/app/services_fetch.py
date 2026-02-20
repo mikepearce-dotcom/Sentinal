@@ -224,30 +224,70 @@ def _name_similarity_score(game_tokens: List[str], candidate: Dict[str, Any]) ->
 def _content_relevance_score(game_tokens: List[str], posts: List[Dict[str, Any]]) -> float:
     if not game_tokens or not posts:
         return 0.0
-
-    game_token_set = set(game_tokens)
-    matches = 0
+    game_token_set = {token for token in game_tokens if len(token) >= 3}
+    if not game_token_set:
+        game_token_set = set(game_tokens)
+    weighted_matches = 0.0
     for post in posts:
-        title_tokens = set(_tokenize_text(str(post.get("title", "") or "")))
-        if title_tokens.intersection(game_token_set):
-            matches += 1
+        title = str(post.get("title", "") or "")
+        selftext = str(post.get("selftext", "") or "")[:260]
+        post_tokens = set(_tokenize_text(f"{title} {selftext}"))
+        overlap = post_tokens.intersection(game_token_set)
+        if not overlap:
+            continue
+        # Stronger signal when multiple game tokens appear in the same post.
+        if len(overlap) >= 2:
+            weighted_matches += 1.0
+        else:
+            weighted_matches += 0.6
+    return min(1.0, weighted_matches / float(len(posts)))
 
-    return matches / float(len(posts))
+def _strict_name_match_score(game_name: str, candidate: Dict[str, Any]) -> float:
+    normalized_game = "".join(_tokenize_text(game_name))
+    if not normalized_game:
+        return 0.0
+    subreddit = "".join(_tokenize_text(str(candidate.get("subreddit", "") or "")))
+    title = "".join(_tokenize_text(str(candidate.get("title", "") or "")))
+    description = "".join(_tokenize_text(str(candidate.get("description", "") or "")))
+    if normalized_game and normalized_game == subreddit:
+        return 1.0
+    if normalized_game and normalized_game in subreddit:
+        return 0.85
+    if normalized_game and normalized_game in title:
+        return 0.7
+    if normalized_game and normalized_game in description:
+        return 0.45
+    return 0.0
 
+def _normalize_activity_score(raw_value: float, low: float, high: float) -> float:
+    if raw_value <= 0:
+        return 0.0
+    if high <= low:
+        return 0.5
+    normalized = (raw_value - low) / (high - low)
+    if normalized < 0.0:
+        return 0.0
+    if normalized > 1.0:
+        return 1.0
+    return normalized
 
-def _build_discovery_reason(content_score: float, activity_score: float, name_score: float) -> str:
-    if content_score >= 0.5 and activity_score >= 1.5:
-        return "High content relevance and consistent discussion"
-    if name_score >= 0.5 and activity_score >= 1.0:
-        return "Name match with active engagement"
-    if content_score >= 0.35:
-        return "Frequent game mentions in recent posts"
-    if activity_score >= 2.0:
-        return "Active subreddit with ongoing discussions"
-    if name_score >= 0.35:
-        return "Strong name similarity to the game title"
+def _build_discovery_reason(
+    content_score: float,
+    activity_score: float,
+    name_score: float,
+    strict_match_score: float,
+) -> str:
+    if strict_match_score >= 0.8 and content_score >= 0.25:
+        return "Direct name match with relevant recent discussion"
+    if name_score >= 0.55 and content_score >= 0.30:
+        return "Strong title/name relevance with supporting discussion signal"
+    if content_score >= 0.45 and activity_score >= 0.45:
+        return "Frequent recent game mentions with healthy activity"
+    if strict_match_score >= 0.6:
+        return "Likely official or close-match community by name"
+    if name_score >= 0.35 and activity_score >= 0.35:
+        return "Relevant match with moderate engagement"
     return "Potential match based on available subreddit signals"
-
 
 async def _openai_rerank_subreddit_candidates(
     game_name: str,
@@ -399,19 +439,15 @@ async def discover_subreddits_for_game(
     lookup_key = _normalize_game_lookup_key(game_name)
     if not lookup_key:
         return []
-
     safe_max = max(1, min(max_results, DISCOVERY_MAX_RESULTS))
-
     now = time.time()
     cached = _discovery_cache.get(lookup_key)
     if cached and now - cached[0] < DISCOVERY_CACHE_TTL:
         return [dict(item) for item in cached[1][:safe_max]]
-
     prefixes = _build_subreddit_prefixes(game_name)
     if not prefixes:
         _discovery_cache[lookup_key] = (now, [])
         return []
-
     candidate_map: Dict[str, Dict[str, Any]] = {}
     for prefix in prefixes:
         try:
@@ -419,79 +455,149 @@ async def discover_subreddits_for_game(
         except Exception as exc:
             print(f"Subreddit discovery prefix failed ({prefix}): {exc}")
             continue
-
         for candidate in candidates:
             subreddit = str(candidate.get("subreddit", "") or "").lower()
             if not subreddit:
                 continue
-
             existing = candidate_map.get(subreddit)
             if existing is None:
                 candidate_map[subreddit] = candidate
                 continue
-
             if int(candidate.get("subscribers", 0) or 0) > int(existing.get("subscribers", 0) or 0):
                 candidate_map[subreddit] = candidate
-
     if not candidate_map:
         _discovery_cache[lookup_key] = (now, [])
         return []
-
+    game_tokens = _extract_signal_tokens(game_name)
+    pre_scored: List[Dict[str, Any]] = []
+    for candidate in candidate_map.values():
+        subreddit = str(candidate.get("subreddit", "") or "")
+        if not subreddit:
+            continue
+        name_score = _name_similarity_score(game_tokens, candidate)
+        strict_match_score = _strict_name_match_score(game_name, candidate)
+        subscribers = int(candidate.get("subscribers", 0) or 0)
+        # Relevance-first gate: avoid low-signal communities before activity weighting.
+        if strict_match_score < 0.45 and name_score < 0.20:
+            continue
+        pre_scored.append(
+            {
+                **candidate,
+                "subscribers": subscribers,
+                "_name_score": name_score,
+                "_strict_match_score": strict_match_score,
+                "_relevance_seed": (0.65 * strict_match_score) + (0.35 * name_score),
+            }
+        )
+    # Fallback so discovery still returns candidates even when strict matching is sparse.
+    if not pre_scored:
+        fallback = sorted(
+            candidate_map.values(),
+            key=lambda item: int(item.get("subscribers", 0) or 0),
+            reverse=True,
+        )[: max(6, min(DISCOVERY_MAX_CANDIDATES, 12))]
+        for candidate in fallback:
+            name_score = _name_similarity_score(game_tokens, candidate)
+            strict_match_score = _strict_name_match_score(game_name, candidate)
+            pre_scored.append(
+                {
+                    **candidate,
+                    "subscribers": int(candidate.get("subscribers", 0) or 0),
+                    "_name_score": name_score,
+                    "_strict_match_score": strict_match_score,
+                    "_relevance_seed": (0.65 * strict_match_score) + (0.35 * name_score),
+                }
+            )
     ranked_candidates = sorted(
-        candidate_map.values(),
-        key=lambda item: int(item.get("subscribers", 0) or 0),
+        pre_scored,
+        key=lambda item: (
+            float(item.get("_relevance_seed", 0.0)),
+            int(item.get("subscribers", 0) or 0),
+        ),
         reverse=True,
     )[:DISCOVERY_MAX_CANDIDATES]
-
-    game_tokens = _extract_signal_tokens(game_name)
     scored: List[Dict[str, Any]] = []
-
     for candidate in ranked_candidates:
         subreddit = str(candidate.get("subreddit", "") or "")
         if not subreddit:
             continue
-
+        recent_posts: List[Dict[str, Any]] = []
+        baseline_posts: List[Dict[str, Any]] = []
         try:
-            sampled_posts = await _fetch_posts_window(subreddit, after="30d", before="14d")
+            recent_posts = await _fetch_posts_window(subreddit, after="14d", before="0h")
         except Exception as exc:
-            print(f"Subreddit sample fetch failed ({subreddit}): {exc}")
-            sampled_posts = []
-
-        sampled_posts = sampled_posts[:DISCOVERY_SAMPLE_POSTS]
+            print(f"Subreddit recent sample fetch failed ({subreddit}): {exc}")
+        try:
+            baseline_posts = await _fetch_posts_window(subreddit, after="30d", before="14d")
+        except Exception as exc:
+            print(f"Subreddit baseline sample fetch failed ({subreddit}): {exc}")
+        recent_limit = max(1, int(DISCOVERY_SAMPLE_POSTS * 0.7))
+        recent_posts = recent_posts[:recent_limit]
+        remaining = max(DISCOVERY_SAMPLE_POSTS - len(recent_posts), 0)
+        baseline_posts = baseline_posts[:remaining]
+        sampled_posts = (recent_posts + baseline_posts)[:DISCOVERY_SAMPLE_POSTS]
         total_comments = sum(int(post.get("num_comments", 0) or 0) for post in sampled_posts)
         total_score = sum(int(post.get("score", 0) or 0) for post in sampled_posts)
-
-        activity_score = math.log(1 + total_comments) + 0.5 * math.log(1 + total_score)
-        name_score = _name_similarity_score(game_tokens, candidate)
+        raw_activity = (
+            math.log(1 + total_comments)
+            + 0.4 * math.log(1 + total_score)
+            + 0.2 * math.log(1 + int(candidate.get("subscribers", 0) or 0))
+        )
+        name_score = float(candidate.get("_name_score", 0.0) or 0.0)
+        strict_match_score = float(candidate.get("_strict_match_score", 0.0) or 0.0)
         content_score = _content_relevance_score(game_tokens, sampled_posts)
-
-        combined_score = (0.45 * content_score) + (0.35 * activity_score) + (0.20 * name_score)
-        reason = _build_discovery_reason(content_score, activity_score, name_score)
-
+        titles_source = recent_posts if recent_posts else sampled_posts
         scored.append(
             {
                 "subreddit": subreddit,
                 "subscribers": int(candidate.get("subscribers", 0) or 0),
-                "score": round(combined_score, 4),
-                "reason": reason,
-                "_sample_titles": [str(post.get("title", "") or "") for post in sampled_posts[:3]],
+                "score": 0.0,
+                "reason": "",
+                "_name_score": name_score,
+                "_strict_match_score": strict_match_score,
+                "_content_score": content_score,
+                "_raw_activity": raw_activity,
+                "_sample_titles": [str(post.get("title", "") or "") for post in titles_source[:3]],
             }
         )
-
     if not scored:
         _discovery_cache[lookup_key] = (now, [])
         return []
-
+    activity_values = [float(item.get("_raw_activity", 0.0) or 0.0) for item in scored]
+    activity_low = min(activity_values) if activity_values else 0.0
+    activity_high = max(activity_values) if activity_values else 0.0
+    for item in scored:
+        content_score = float(item.get("_content_score", 0.0) or 0.0)
+        name_score = float(item.get("_name_score", 0.0) or 0.0)
+        strict_match_score = float(item.get("_strict_match_score", 0.0) or 0.0)
+        activity_score = _normalize_activity_score(
+            float(item.get("_raw_activity", 0.0) or 0.0),
+            activity_low,
+            activity_high,
+        )
+        combined_score = (
+            (0.50 * content_score)
+            + (0.22 * name_score)
+            + (0.20 * strict_match_score)
+            + (0.08 * activity_score)
+        )
+        if content_score >= 0.55 and strict_match_score >= 0.60:
+            combined_score += 0.08
+        item["score"] = round(combined_score, 4)
+        item["reason"] = _build_discovery_reason(
+            content_score,
+            activity_score,
+            name_score,
+            strict_match_score,
+        )
     deterministic = sorted(
         scored,
         key=lambda item: (float(item.get("score", 0.0)), int(item.get("subscribers", 0) or 0)),
         reverse=True,
     )
-
     rerank_candidates = deterministic[:DISCOVERY_OPENAI_TOP]
     picks = await _openai_rerank_subreddit_candidates(game_name, rerank_candidates)
     reranked = _apply_openai_rerank(deterministic, picks) if picks else deterministic
-
     cached_rows: List[Dict[str, Any]] = []
     for item in reranked[:DISCOVERY_MAX_RESULTS]:
         cached_rows.append(
@@ -502,10 +608,8 @@ async def discover_subreddits_for_game(
                 "reason": str(item.get("reason", "") or ""),
             }
         )
-
     _discovery_cache[lookup_key] = (now, cached_rows)
     return [dict(item) for item in cached_rows[:safe_max]]
-
 
 async def fetch_posts_for_subreddits(
     subreddits: List[str],
@@ -659,5 +763,6 @@ async def sample_comments_for_posts(
         await asyncio.sleep(COMMENT_FETCH_DELAY)
 
     return sampled
+
 
 

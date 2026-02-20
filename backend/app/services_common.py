@@ -142,21 +142,24 @@ def _build_subreddit_prefixes(game_name: str) -> List[str]:
         if cleaned not in prefixes:
             prefixes.append(cleaned)
 
+    # Prioritize high-signal forms and avoid short partial prefixes that introduce noisy matches.
     _add("".join(tokens))
     _add("_".join(tokens))
 
     for token in tokens:
-        _add(token)
-        max_len = min(len(token), 8)
-        for length in range(3, max_len + 1):
-            _add(token[:length])
+        if len(token) >= 3:
+            _add(token)
 
     for span in (2, 3):
         if len(tokens) >= span:
             _add("".join(tokens[:span]))
             _add("_".join(tokens[:span]))
 
-    return prefixes[:20]
+    if len(tokens) >= 2:
+        acronym = "".join(token[0] for token in tokens if token)
+        _add(acronym)
+
+    return prefixes[:14]
 
 
 def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
@@ -369,5 +372,6 @@ def _select_best_comments(comments: List[Dict[str, Any]], max_count: int) -> Lis
             author_counts[author] = author_counts.get(author, 0) + 1
 
     return selected
+
 
 
