@@ -16,6 +16,7 @@ from .services_analysis import (
     _normalize_sentiment_label,
     _normalize_themes,
     _post_signal_blob,
+    _post_engagement_weight,
     analyze_posts_with_ai,
     analyze_subreddit_with_ai,
 )
