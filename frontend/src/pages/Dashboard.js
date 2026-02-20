@@ -2,6 +2,11 @@ import React, { useCallback, useContext, useEffect, useMemo, useState } from 're
 import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import api from '../api/axios';
+import ActionProgressLoader from '../components/ActionProgressLoader';
+import { readAverageDurationMs, updateAverageDurationMs } from '../utils/durationEstimator';
+
+const DISCOVERY_DURATION_KEY = 'discover_subreddits';
+const SINGLE_SCAN_DURATION_KEY = 'single_scan';
 
 const Dashboard = () => {
   const navigate = useNavigate();
@@ -19,6 +24,10 @@ const Dashboard = () => {
   const [discoveryError, setDiscoveryError] = useState('');
   const [subredditSuggestions, setSubredditSuggestions] = useState([]);
   const [lastDiscoveryGame, setLastDiscoveryGame] = useState('');
+  const [discoveryStartedAtMs, setDiscoveryStartedAtMs] = useState(0);
+  const [scanStartedAtMs, setScanStartedAtMs] = useState(0);
+  const [discoveryAvgMs, setDiscoveryAvgMs] = useState(() => readAverageDurationMs(DISCOVERY_DURATION_KEY));
+  const [scanAvgMs, setScanAvgMs] = useState(() => readAverageDurationMs(SINGLE_SCAN_DURATION_KEY));
 
   const sortedGames = useMemo(() => {
     return [...games].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -54,6 +63,8 @@ const Dashboard = () => {
         return [];
       }
 
+      const startedAtMs = Date.now();
+      setDiscoveryStartedAtMs(startedAtMs);
       setDiscoveringSubreddits(true);
       setDiscoveryError('');
 
@@ -89,6 +100,10 @@ const Dashboard = () => {
         setSubredditSuggestions([]);
         return [];
       } finally {
+        const durationMs = Date.now() - startedAtMs;
+        const nextAvgMs = updateAverageDurationMs(DISCOVERY_DURATION_KEY, durationMs);
+        setDiscoveryAvgMs(nextAvgMs);
+        setDiscoveryStartedAtMs(0);
         setDiscoveringSubreddits(false);
       }
     },
@@ -130,6 +145,8 @@ const Dashboard = () => {
   };
 
   const runScan = async (gameId) => {
+    const startedAtMs = Date.now();
+    setScanStartedAtMs(startedAtMs);
     setRunningScanFor(gameId);
     try {
       await api.post(`/api/games/${gameId}/scan`);
@@ -138,6 +155,10 @@ const Dashboard = () => {
       const detail = err?.response?.data?.detail;
       setLoadingError(typeof detail === 'string' ? detail : 'Scan failed. Check OpenAI key and try again.');
     } finally {
+      const durationMs = Date.now() - startedAtMs;
+      const nextAvgMs = updateAverageDurationMs(SINGLE_SCAN_DURATION_KEY, durationMs);
+      setScanAvgMs(nextAvgMs);
+      setScanStartedAtMs(0);
       setRunningScanFor('');
     }
   };
@@ -250,6 +271,17 @@ const Dashboard = () => {
             </button>
           </form>
 
+          {discoveringSubreddits ? (
+            <div className="mt-4">
+              <ActionProgressLoader
+                label="Discovering subreddits"
+                subtitle="Scanning Reddit communities that match the game name."
+                startedAtMs={discoveryStartedAtMs}
+                averageDurationMs={discoveryAvgMs}
+              />
+            </div>
+          ) : null}
+
           {subredditSuggestions.length > 0 ? (
             <div className="mt-4 p-3 border border-white/10 rounded bg-black/30">
               <p className="text-xs text-zinc-400 mb-2">Suggested subreddits</p>
@@ -344,6 +376,18 @@ const Dashboard = () => {
                         {deleting ? 'Deleting...' : 'Delete'}
                       </button>
                     </div>
+
+                    {scanning ? (
+                      <div className="mt-4">
+                        <ActionProgressLoader
+                          compact
+                          label={`Running scan for r/${game.subreddit}`}
+                          subtitle="Fetching posts, sampling comments, and generating AI analysis."
+                          startedAtMs={scanStartedAtMs}
+                          averageDurationMs={scanAvgMs}
+                        />
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}

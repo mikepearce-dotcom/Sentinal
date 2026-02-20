@@ -2,6 +2,8 @@ import React, { useCallback, useContext, useEffect, useMemo, useState } from 're
 import { useNavigate, useParams } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import api from '../api/axios';
+import ActionProgressLoader from '../components/ActionProgressLoader';
+import { readAverageDurationMs, updateAverageDurationMs } from '../utils/durationEstimator';
 
 const STOP_WORDS = new Set([
   'the',
@@ -37,6 +39,10 @@ const STOP_WORDS = new Set([
   'game',
   'reddit',
 ]);
+
+const DISCOVERY_DURATION_KEY = 'discover_subreddits';
+const SINGLE_SCAN_DURATION_KEY = 'single_scan';
+const MULTI_SCAN_DURATION_KEY = 'multi_scan';
 
 const toArray = (value) => (Array.isArray(value) ? value : []);
 
@@ -426,6 +432,12 @@ const GameDetail = () => {
   const [multiScanning, setMultiScanning] = useState(false);
   const [multiScanError, setMultiScanError] = useState('');
   const [multiScanResult, setMultiScanResult] = useState(null);
+  const [scanStartedAtMs, setScanStartedAtMs] = useState(0);
+  const [discoverStartedAtMs, setDiscoverStartedAtMs] = useState(0);
+  const [multiScanStartedAtMs, setMultiScanStartedAtMs] = useState(0);
+  const [singleScanAvgMs, setSingleScanAvgMs] = useState(() => readAverageDurationMs(SINGLE_SCAN_DURATION_KEY));
+  const [discoverAvgMs, setDiscoverAvgMs] = useState(() => readAverageDurationMs(DISCOVERY_DURATION_KEY));
+  const [multiScanAvgMs, setMultiScanAvgMs] = useState(() => readAverageDurationMs(MULTI_SCAN_DURATION_KEY));
 
   const loadPage = useCallback(async () => {
     setLoading(true);
@@ -488,6 +500,8 @@ const GameDetail = () => {
   }, [game?.subreddit]);
 
   const runScan = async () => {
+    const startedAtMs = Date.now();
+    setScanStartedAtMs(startedAtMs);
     setScanning(true);
     setPageError('');
 
@@ -498,6 +512,10 @@ const GameDetail = () => {
       const detail = err?.response?.data?.detail;
       setPageError(typeof detail === 'string' ? detail : 'Scan failed. Check backend logs/OpenAI key.');
     } finally {
+      const durationMs = Date.now() - startedAtMs;
+      const nextAvgMs = updateAverageDurationMs(SINGLE_SCAN_DURATION_KEY, durationMs);
+      setSingleScanAvgMs(nextAvgMs);
+      setScanStartedAtMs(0);
       setScanning(false);
     }
   };
@@ -547,6 +565,8 @@ const GameDetail = () => {
       return;
     }
 
+    const startedAtMs = Date.now();
+    setDiscoverStartedAtMs(startedAtMs);
     setDiscoveringCommunities(true);
     setMultiScanError('');
 
@@ -573,6 +593,10 @@ const GameDetail = () => {
       const detail = err?.response?.data?.detail;
       setMultiScanError(typeof detail === 'string' ? detail : 'Failed to discover related communities.');
     } finally {
+      const durationMs = Date.now() - startedAtMs;
+      const nextAvgMs = updateAverageDurationMs(DISCOVERY_DURATION_KEY, durationMs);
+      setDiscoverAvgMs(nextAvgMs);
+      setDiscoverStartedAtMs(0);
       setDiscoveringCommunities(false);
     }
   };
@@ -583,6 +607,8 @@ const GameDetail = () => {
       return;
     }
 
+    const startedAtMs = Date.now();
+    setMultiScanStartedAtMs(startedAtMs);
     setMultiScanning(true);
     setMultiScanError('');
 
@@ -602,6 +628,10 @@ const GameDetail = () => {
       const detail = err?.response?.data?.detail;
       setMultiScanError(typeof detail === 'string' ? detail : 'Combined scan failed.');
     } finally {
+      const durationMs = Date.now() - startedAtMs;
+      const nextAvgMs = updateAverageDurationMs(MULTI_SCAN_DURATION_KEY, durationMs);
+      setMultiScanAvgMs(nextAvgMs);
+      setMultiScanStartedAtMs(0);
       setMultiScanning(false);
     }
   };
@@ -743,6 +773,16 @@ const GameDetail = () => {
           <p className="text-zinc-400 mt-2 text-lg">r/{game.subreddit}</p>
           {game.keywords ? <p className="text-sm text-zinc-500 mt-1">Keywords: {game.keywords}</p> : null}
           {pageError ? <p className="text-sm text-red-400 mt-4">{pageError}</p> : null}
+          {scanning ? (
+            <div className="mt-4">
+              <ActionProgressLoader
+                label={`Running scan for r/${game.subreddit}`}
+                subtitle="Fetching posts, sampling comments, and generating AI analysis."
+                startedAtMs={scanStartedAtMs}
+                averageDurationMs={singleScanAvgMs}
+              />
+            </div>
+          ) : null}
         </section>
 
         <section className="card-glass p-6">
@@ -797,6 +837,28 @@ const GameDetail = () => {
               {multiScanning ? 'Running Combined Scan...' : 'Run Combined Scan'}
             </button>
           </div>
+
+          {discoveringCommunities ? (
+            <div className="mt-4">
+              <ActionProgressLoader
+                label="Discovering related communities"
+                subtitle="Finding additional subreddits with active game discussion."
+                startedAtMs={discoverStartedAtMs}
+                averageDurationMs={discoverAvgMs}
+              />
+            </div>
+          ) : null}
+
+          {multiScanning ? (
+            <div className="mt-4">
+              <ActionProgressLoader
+                label="Running combined community scan"
+                subtitle="Aggregating sentiment and building per-subreddit breakdowns."
+                startedAtMs={multiScanStartedAtMs}
+                averageDurationMs={multiScanAvgMs}
+              />
+            </div>
+          ) : null}
 
           {communitySuggestions.length > 0 ? (
             <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
