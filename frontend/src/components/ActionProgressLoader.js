@@ -1,6 +1,64 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const STAGE_ADVANCE_MS = 3500;
+
+const LOADER_PHASES = {
+  idle: {
+    label: 'BOOT',
+    motion: {
+      sweepDuration: '3.2s',
+      coreDuration: '1.8s',
+      orbDuration: '2.4s',
+      ringADuration: '2.9s',
+      ringBDuration: '3.7s',
+      ringCDuration: '5.3s',
+    },
+  },
+  acquire: {
+    label: 'DISCOVERY',
+    motion: {
+      sweepDuration: '2.8s',
+      coreDuration: '1.5s',
+      orbDuration: '2.1s',
+      ringADuration: '2.5s',
+      ringBDuration: '3.3s',
+      ringCDuration: '4.8s',
+    },
+  },
+  compute: {
+    label: 'ANALYSIS',
+    motion: {
+      sweepDuration: '2.4s',
+      coreDuration: '1.2s',
+      orbDuration: '1.7s',
+      ringADuration: '2.2s',
+      ringBDuration: '3.0s',
+      ringCDuration: '4.4s',
+    },
+  },
+  synthesize: {
+    label: 'WEIGHTING',
+    motion: {
+      sweepDuration: '2.0s',
+      coreDuration: '1.0s',
+      orbDuration: '1.4s',
+      ringADuration: '1.9s',
+      ringBDuration: '2.7s',
+      ringCDuration: '4.0s',
+    },
+  },
+  finalize: {
+    label: 'COMPILE',
+    motion: {
+      sweepDuration: '2.9s',
+      coreDuration: '0.95s',
+      orbDuration: '1.2s',
+      ringADuration: '2.4s',
+      ringBDuration: '3.2s',
+      ringCDuration: '4.6s',
+    },
+  },
+};
 
 const formatDuration = (valueMs) => {
   const totalSeconds = Math.max(0, Math.floor(Number(valueMs || 0) / 1000));
@@ -26,6 +84,18 @@ const getActiveStageIndex = (stageCount, elapsedMs, estimateMs) => {
 
   const index = Math.floor(elapsedMs / STAGE_ADVANCE_MS);
   return Math.min(stageCount - 1, Math.max(0, index));
+};
+
+const getLoaderPhase = (activeStageIndex, stageCount) => {
+  if (stageCount <= 0 || activeStageIndex < 0) {
+    return 'idle';
+  }
+
+  const progress = (activeStageIndex + 1) / stageCount;
+  if (progress < 0.34) return 'acquire';
+  if (progress < 0.67) return 'compute';
+  if (progress < 0.95) return 'synthesize';
+  return 'finalize';
 };
 
 const ActionProgressLoader = ({
@@ -64,6 +134,20 @@ const ActionProgressLoader = ({
 
   const activeStageIndex = getActiveStageIndex(safeStages.length, elapsedMs, estimateMs);
   const activeStageNumber = activeStageIndex >= 0 ? activeStageIndex + 1 : 0;
+  const loaderPhase = getLoaderPhase(activeStageIndex, safeStages.length);
+
+  const loaderPhaseConfig = LOADER_PHASES[loaderPhase] || LOADER_PHASES.idle;
+  const loaderStyle = useMemo(
+    () => ({
+      '--loader-sweep-duration': loaderPhaseConfig.motion.sweepDuration,
+      '--loader-core-duration': loaderPhaseConfig.motion.coreDuration,
+      '--loader-orb-duration': loaderPhaseConfig.motion.orbDuration,
+      '--loader-ring-a-duration': loaderPhaseConfig.motion.ringADuration,
+      '--loader-ring-b-duration': loaderPhaseConfig.motion.ringBDuration,
+      '--loader-ring-c-duration': loaderPhaseConfig.motion.ringCDuration,
+    }),
+    [loaderPhaseConfig]
+  );
 
   const etaLabel = estimateMs > 0
     ? (remainingMs > 0 ? `ETA ${formatDuration(remainingMs)}` : 'Wrapping up...')
@@ -80,7 +164,20 @@ const ActionProgressLoader = ({
 
   return (
     <div className={`action-progress ${compact ? 'action-progress-compact' : ''}`} role="status" aria-live="polite">
-      <div className="action-loader" aria-hidden="true" />
+      <div
+        className={`action-loader ${compact ? 'action-loader-compact' : ''} action-loader-phase-${loaderPhase}`}
+        style={loaderStyle}
+        aria-hidden="true"
+      >
+        <span className="action-loader-ring action-loader-ring-a" />
+        <span className="action-loader-ring action-loader-ring-b" />
+        <span className="action-loader-ring action-loader-ring-c" />
+        <span className="action-loader-beam" />
+        <span className="action-loader-orb action-loader-orb-a" />
+        <span className="action-loader-orb action-loader-orb-b" />
+        <span className="action-loader-orb action-loader-orb-c" />
+        <span className="action-loader-core" />
+      </div>
       <div className="action-progress-copy">
         <p className="action-progress-label">{label}</p>
         {subtitle ? <p className="action-progress-subtitle">{subtitle}</p> : null}
@@ -88,7 +185,7 @@ const ActionProgressLoader = ({
         {safeStages.length > 0 ? (
           <div className="action-progress-stage-stack">
             <p className="action-progress-pipeline font-mono">
-              Pipeline {activeStageNumber}/{safeStages.length}
+              Pipeline {activeStageNumber}/{safeStages.length} · {loaderPhaseConfig.label}
             </p>
             <ul className="action-progress-stages">
               {visibleStages.map((stage) => {
