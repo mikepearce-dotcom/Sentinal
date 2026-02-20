@@ -13,31 +13,20 @@ const getErrorMessage = (err) => {
     return detail;
   }
 
-  if (!err?.response) {
-    return 'Unable to reach backend. Check REACT_APP_BACKEND_URL and backend health.';
-  }
-
-  return 'Login failed. Please try again.';
+  return err?.message || 'Login failed. Please try again.';
 };
 
 const Login = () => {
-  const { login } = useContext(AuthContext);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const { login, authLoading, authError } = useContext(AuthContext);
   const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleLogin = async () => {
     setError('');
-    setSubmitting(true);
 
     try {
-      await login(email, password);
+      await login();
     } catch (err) {
       setError(getErrorMessage(err));
-    } finally {
-      setSubmitting(false);
     }
   };
 
@@ -46,31 +35,19 @@ const Login = () => {
       <div className="w-full max-w-md card-glass p-8">
         <p className="font-mono text-xs text-[#D3F34B] tracking-widest uppercase">Sentient Tracker</p>
         <h1 className="font-heading text-3xl font-black mt-3">Log In</h1>
-        <p className="text-zinc-400 mt-2 text-sm">Sign in to manage tracked games and run scans.</p>
+        <p className="text-zinc-400 mt-2 text-sm">Use secure Auth0 login to access your sentiment dashboard.</p>
 
-        <form onSubmit={handleSubmit} className="mt-6 space-y-3">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full p-3 bg-black/40 border border-white/10 rounded"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full p-3 bg-black/40 border border-white/10 rounded"
-            required
-          />
-          <button type="submit" disabled={submitting} className="btn-primary w-full py-3 disabled:opacity-60">
-            <span>{submitting ? 'LOGGING IN...' : 'LOG IN'}</span>
-          </button>
-        </form>
+        <button
+          type="button"
+          onClick={handleLogin}
+          disabled={authLoading}
+          className="btn-primary w-full py-3 mt-6 disabled:opacity-60"
+        >
+          <span>{authLoading ? 'REDIRECTING...' : 'CONTINUE WITH AUTH0'}</span>
+        </button>
 
         {error ? <p className="text-red-400 text-sm mt-4">{error}</p> : null}
+        {authError ? <p className="text-amber-300 text-sm mt-2">{authError}</p> : null}
 
         <p className="text-sm text-zinc-400 mt-6">
           Need an account?{' '}

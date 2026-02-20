@@ -8,7 +8,15 @@ import Dashboard from './pages/Dashboard';
 import GameDetail from './pages/GameDetail';
 
 function AppRoutes() {
-  const { user } = useContext(AuthContext);
+  const { user, authLoading } = useContext(AuthContext);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#09090b] text-zinc-300 flex items-center justify-center">
+        Authenticating...
+      </div>
+    );
+  }
 
   return (
     <Routes>

@@ -4,12 +4,30 @@ const api = axios.create({
   baseURL: process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000',
 });
 
-// add interceptor for token
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token && config.headers) {
-    config.headers.Authorization = `Bearer ${token}`;
+let accessTokenGetter = null;
+
+export const setAccessTokenGetter = (getter) => {
+  accessTokenGetter = getter;
+};
+
+api.interceptors.request.use(async (config) => {
+  if (!config.headers) {
+    return config;
   }
+
+  if (!accessTokenGetter) {
+    return config;
+  }
+
+  try {
+    const token = await accessTokenGetter();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  } catch (_error) {
+    // If silent token retrieval fails, continue without Authorization header.
+  }
+
   return config;
 });
 

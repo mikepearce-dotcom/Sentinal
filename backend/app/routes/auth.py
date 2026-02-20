@@ -2,7 +2,8 @@ import os
 import uuid
 import jwt
 from datetime import datetime, timedelta
-from typing import Optional
+from functools import lru_cache
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -13,10 +14,46 @@ from ..utils import hash_password, verify_password
 
 router = APIRouter()
 
-# jwt utilities
+# Legacy JWT utilities (kept for local/dev compatibility when Auth0 vars are absent)
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60
+
+# Auth0 configuration
+AUTH0_DOMAIN = (os.getenv("AUTH0_DOMAIN") or "").strip()
+AUTH0_AUDIENCE = (os.getenv("AUTH0_AUDIENCE") or "").strip()
+AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
+AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
+
+
+def _auth0_enabled() -> bool:
+    return bool(AUTH0_DOMAIN and AUTH0_AUDIENCE and AUTH0_ISSUER and AUTH0_JWKS_URL)
+
+
+@lru_cache(maxsize=1)
+def _jwks_client() -> Optional[jwt.PyJWKClient]:
+    if not _auth0_enabled():
+        return None
+    return jwt.PyJWKClient(AUTH0_JWKS_URL)
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _derive_name(email: str, fallback: str = "") -> str:
+    if fallback.strip():
+        return fallback.strip()
+
+    email_value = (email or "").strip()
+    if "@" in email_value:
+        return email_value.split("@", 1)[0]
+
+    return "Auth0 User"
 
 
 def create_access_token(user_id: str) -> str:
@@ -32,6 +69,73 @@ def decode_access_token(token: str) -> dict:
         return {}
 
 
+def _decode_auth0_access_token(token: str) -> Dict[str, Any]:
+    if not _auth0_enabled():
+        return {}
+
+    try:
+        jwks = _jwks_client()
+        if jwks is None:
+            return {}
+
+        signing_key = jwks.get_signing_key_from_jwt(token)
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=AUTH0_AUDIENCE,
+            issuer=AUTH0_ISSUER,
+        )
+    except Exception:
+        return {}
+
+
+async def _get_or_create_auth0_user(claims: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    auth0_sub = _first_non_empty(claims.get("sub"))
+    if not auth0_sub:
+        return None
+
+    existing = await database.db.users.find_one({"auth0_sub": auth0_sub})
+    if existing:
+        return existing
+
+    email = _first_non_empty(claims.get("email"), claims.get("upn"), claims.get("preferred_username"))
+    name = _derive_name(
+        email,
+        _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name")),
+    )
+
+    if not email:
+        safe_sub = auth0_sub.replace("|", ".").replace(" ", "")
+        email = f"{safe_sub}@auth0.local"
+
+    by_email = await database.db.users.find_one({"email": email})
+    if by_email:
+        await database.db.users.update_one(
+            {"_id": by_email["_id"]},
+            {
+                "$set": {
+                    "auth0_sub": auth0_sub,
+                    "auth_provider": "auth0",
+                    "name": by_email.get("name") or name,
+                }
+            },
+        )
+        refreshed = await database.db.users.find_one({"_id": by_email["_id"]})
+        return refreshed or by_email
+
+    user_doc = {
+        "user_id": str(uuid.uuid4()),
+        "email": email,
+        "name": name,
+        "auth_provider": "auth0",
+        "auth0_sub": auth0_sub,
+        "created_at": datetime.utcnow(),
+    }
+    await database.db.users.insert_one(user_doc)
+    return user_doc
+
+
 class LoginData(BaseModel):
     email: str
     password: str
@@ -39,13 +143,16 @@ class LoginData(BaseModel):
 
 @router.post("/signup")
 async def signup(user: UserCreate):
-    existing = await database.db.users.find_one({"email": user.email})
+    email = str(user.email or "").strip().lower()
+    existing = await database.db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
     user_dict = user.dict()
+    user_dict["email"] = email
     user_dict["password_hash"] = hash_password(user_dict.pop("password"))
     user_dict["user_id"] = str(uuid.uuid4())
+    user_dict["auth_provider"] = "email"
     user_dict["created_at"] = datetime.utcnow()
 
     await database.db.users.insert_one(user_dict)
@@ -54,8 +161,13 @@ async def signup(user: UserCreate):
 
 @router.post("/login", response_model=Token)
 async def login(data: LoginData):
-    user = await database.db.users.find_one({"email": data.email})
-    if not user or not verify_password(data.password, user["password_hash"]):
+    email = str(data.email or "").strip().lower()
+    user = await database.db.users.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    password_hash = user.get("password_hash")
+    if not password_hash or not verify_password(data.password, password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     access_token = create_access_token(user_id=user["user_id"])
@@ -67,6 +179,18 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     token = authorization.split(" ", 1)[1]
+
+    if _auth0_enabled():
+        claims = _decode_auth0_access_token(token)
+        if not claims:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        user = await _get_or_create_auth0_user(claims)
+        if not user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        return user
+
     data = decode_access_token(token)
     user_id = data.get("user_id")
     if not user_id:
@@ -83,9 +207,10 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
 async def me(user=Depends(get_current_user)):
     if user:
         return {
-            "email": user["email"],
-            "name": user["name"],
-            "user_id": user["user_id"],
+            "email": user.get("email", ""),
+            "name": user.get("name", ""),
+            "user_id": user.get("user_id", ""),
+            "auth_provider": user.get("auth_provider", "email"),
         }
     raise HTTPException(status_code=401)
 

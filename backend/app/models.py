@@ -14,8 +14,9 @@ class UserCreate(UserBase):
 
 class UserInDB(UserBase):
     user_id: str
-    password_hash: str
+    password_hash: Optional[str] = None
     auth_provider: str = "email"
+    auth0_sub: Optional[str] = None
     created_at: datetime
 
 
@@ -70,4 +71,3 @@ class ScanResultDetailOut(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
-
