@@ -44,6 +44,31 @@ const DISCOVERY_DURATION_KEY = 'discover_subreddits';
 const SINGLE_SCAN_DURATION_KEY = 'single_scan';
 const MULTI_SCAN_DURATION_KEY = 'multi_scan';
 
+const DISCOVERY_STAGES = [
+  'Running smart subreddit discovery',
+  'Tokenizing game context and aliases',
+  'Collecting candidate Reddit communities',
+  'Weighting relevance, activity, and name match',
+  'Compiling top subreddit recommendations',
+];
+
+const SINGLE_SCAN_STAGES = [
+  'Ingesting top Reddit posts',
+  'Sampling high-signal comment threads',
+  'Running algorithmic sentiment weighting',
+  'Extracting themes, pain points, and wins',
+  'Compiling top analysis results',
+];
+
+const MULTI_SCAN_STAGES = [
+  'Pulling posts across selected subreddits',
+  'Sampling cross-community comment threads',
+  'Running weighted overall sentiment synthesis',
+  'Executing per-subreddit algorithmic analysis',
+  'Compiling final weighted breakdown',
+];
+
+
 const toArray = (value) => (Array.isArray(value) ? value : []);
 
 const normalizeListEntry = (entry) => {
@@ -780,6 +805,7 @@ const GameDetail = () => {
                 subtitle="Fetching posts, sampling comments, and generating AI analysis."
                 startedAtMs={scanStartedAtMs}
                 averageDurationMs={singleScanAvgMs}
+                stages={SINGLE_SCAN_STAGES}
               />
             </div>
           ) : null}
@@ -845,6 +871,7 @@ const GameDetail = () => {
                 subtitle="Finding additional subreddits with active game discussion."
                 startedAtMs={discoverStartedAtMs}
                 averageDurationMs={discoverAvgMs}
+                stages={DISCOVERY_STAGES}
               />
             </div>
           ) : null}
@@ -856,6 +883,7 @@ const GameDetail = () => {
                 subtitle="Aggregating sentiment and building per-subreddit breakdowns."
                 startedAtMs={multiScanStartedAtMs}
                 averageDurationMs={multiScanAvgMs}
+                stages={MULTI_SCAN_STAGES}
               />
             </div>
           ) : null}

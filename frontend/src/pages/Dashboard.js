@@ -8,6 +8,23 @@ import { readAverageDurationMs, updateAverageDurationMs } from '../utils/duratio
 const DISCOVERY_DURATION_KEY = 'discover_subreddits';
 const SINGLE_SCAN_DURATION_KEY = 'single_scan';
 
+const DISCOVERY_STAGES = [
+  'Running smart subreddit discovery',
+  'Tokenizing game context and aliases',
+  'Collecting candidate Reddit communities',
+  'Weighting relevance, activity, and name match',
+  'Compiling top subreddit recommendations',
+];
+
+const SINGLE_SCAN_STAGES = [
+  'Ingesting top Reddit posts',
+  'Sampling high-signal comment threads',
+  'Running algorithmic sentiment weighting',
+  'Extracting themes, pain points, and wins',
+  'Compiling top analysis results',
+];
+
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const { user, logout } = useContext(AuthContext);
@@ -278,6 +295,7 @@ const Dashboard = () => {
                 subtitle="Scanning Reddit communities that match the game name."
                 startedAtMs={discoveryStartedAtMs}
                 averageDurationMs={discoveryAvgMs}
+                stages={DISCOVERY_STAGES}
               />
             </div>
           ) : null}
@@ -385,6 +403,7 @@ const Dashboard = () => {
                           subtitle="Fetching posts, sampling comments, and generating AI analysis."
                           startedAtMs={scanStartedAtMs}
                           averageDurationMs={scanAvgMs}
+                          stages={SINGLE_SCAN_STAGES}
                         />
                       </div>
                     ) : null}
