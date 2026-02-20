@@ -66,11 +66,12 @@ IMPORTANT INSTRUCTIONS:
 - Ignore toxic language and personal attacks. Summarize professionally.
 - If a keyword list is provided, prioritize those topics in themes and sentiment context.
 
-SENTIMENT SUMMARY REQUIREMENTS (2-3 sentences):
-- Sentence 1: overall sentiment and the primary driver.
-- Sentence 2: top two concrete pain points.
-- Sentence 3 (optional): strongest positive or retention driver.
-- Include at least two [POST:post_id] references inside sentiment_summary.
+EXECUTIVE SUMMARY REQUIREMENTS (1-2 paragraphs, 5-9 sentences total):
+- Write in an executive style: clear diagnosis, evidence, and product implications.
+- Paragraph 1: overall sentiment, primary drivers, and confidence based on repeated signals.
+- Paragraph 2: key risks, strongest positives, and what should be prioritized next.
+- Include at least three [POST:post_id] references inside sentiment_summary.
+- Keep it specific and evidence-led; avoid generic statements.
 
 THEMES REQUIREMENTS:
 - Return 5-10 themes as strings.
@@ -89,7 +90,7 @@ PAIN POINTS / WINS REQUIREMENTS:
 
 REQUIRED JSON OUTPUT:
 1. sentiment_label: "Positive", "Mixed", or "Negative"
-2. sentiment_summary: 2-3 sentences with required structure
+2. sentiment_summary: 1-2 paragraph executive summary with required structure
 3. themes: array of 5-10 specific strings
 4. pain_points: array of exactly 5 objects with:
    - text: string
@@ -224,6 +225,25 @@ def _normalize_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         "wins": _normalize_insight_items(result.get("wins")),
     }
 
+def _summary_word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9']+", str(text or "")))
+
+def _summary_post_ref_count(text: str) -> int:
+    post_ids = _extract_post_ids(str(text or ""))
+    return len(set(post_ids))
+
+def _ensure_detailed_sentiment_summary(primary_summary: str, fallback_summary: str) -> str:
+    primary = str(primary_summary or "").strip()
+    fallback = str(fallback_summary or "").strip()
+    if not primary:
+        return fallback
+    has_depth = _summary_word_count(primary) >= 65 and _summary_post_ref_count(primary) >= 2
+    if has_depth:
+        return primary
+    if fallback and fallback not in primary:
+        if _summary_word_count(primary) < 55 or _summary_post_ref_count(primary) < 2:
+            return f"{primary}\n\n{fallback}".strip()
+    return primary
 
 def _post_signal_blob(post: Dict[str, Any]) -> str:
     return f"{post.get('title', '')} {post.get('selftext', '')}".lower()
@@ -344,16 +364,25 @@ def _build_schema_fallback(posts: List[Dict[str, Any]], game_name: str = "") -> 
         sentiment_label = "Positive"
     else:
         sentiment_label = "Mixed"
-
     refs = [str(post.get("id") or "").strip() for post in top_posts if str(post.get("id") or "").strip()]
     ref_one = refs[0] if refs else ""
     ref_two = refs[1] if len(refs) > 1 else ref_one
-
+    ref_three = refs[2] if len(refs) > 2 else ref_two
+    reference_posts = [ref for ref in [ref_one, ref_two, ref_three] if ref]
+    if reference_posts:
+        reference_block = ", ".join([f"[POST:{ref}]" for ref in reference_posts])
+    else:
+        reference_block = "the highest-engagement sampled threads"
+    primary_ref_label = f"[POST:{ref_one}]" if ref_one else "top-ranked discussion threads"
+    secondary_ref_label = f"[POST:{ref_two}]" if ref_two else "secondary high-signal threads"
+    tertiary_ref_label = f"[POST:{ref_three}]" if ref_three else "additional corroborating threads"
     sentiment_summary = (
-        f"Overall sentiment is {sentiment_label.lower()}, driven by repeated high-engagement product feedback. "
-        f"Primary friction and upside signals are visible in [POST:{ref_one}] and [POST:{ref_two}] where available."
+        f"Executive summary: Overall sentiment is {sentiment_label.lower()} across {len(top_posts)} high-signal Reddit threads. "
+        f"The dominant discussion drivers are persistent product issues and repeat strengths rather than one-off reactions, with representative evidence in {reference_block}. "
+        f"Signal consistency across upvoted and highly-commented posts suggests these themes are materially influencing player experience.\n\n"
+        f"From a product perspective, priority should go to the most repeated friction patterns first, while protecting the features players consistently praise for retention and satisfaction. "
+        f"The strongest diagnostic references are concentrated around {primary_ref_label} and {secondary_ref_label}, with additional corroboration in {tertiary_ref_label}."
     ).strip()
-
     phrases = _extract_theme_phrases_from_titles(top_posts, max_phrases=6)
     if not phrases:
         phrases = ["gameplay feedback patterns", "content pacing concerns", "progression and balance issues"]
@@ -451,9 +480,10 @@ def ensure_valid_analysis_schema(
     if sentiment_label not in ("Positive", "Mixed", "Negative"):
         sentiment_label = fallback.get("sentiment_label", "Mixed")
 
-    sentiment_summary = str(normalized.get("sentiment_summary", "") or "").strip()
-    if not sentiment_summary:
-        sentiment_summary = str(fallback.get("sentiment_summary", "") or "")
+    sentiment_summary = _ensure_detailed_sentiment_summary(
+        str(normalized.get("sentiment_summary", "") or "").strip(),
+        str(fallback.get("sentiment_summary", "") or "").strip(),
+    )
 
     themes = normalized.get("themes") or []
     if not themes:
@@ -583,5 +613,3 @@ async def analyze_subreddit_with_ai(
 
 def _extract_post_ids(text: str) -> List[str]:
     return re.findall(r"\[POST:([A-Za-z0-9_]+)\]", text or "")
-
-
