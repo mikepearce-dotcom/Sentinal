@@ -457,6 +457,7 @@ const GameDetail = () => {
   const [multiScanning, setMultiScanning] = useState(false);
   const [multiScanError, setMultiScanError] = useState('');
   const [multiScanResult, setMultiScanResult] = useState(null);
+  const [manualSubredditInput, setManualSubredditInput] = useState('');
   const [scanStartedAtMs, setScanStartedAtMs] = useState(0);
   const [discoverStartedAtMs, setDiscoverStartedAtMs] = useState(0);
   const [multiScanStartedAtMs, setMultiScanStartedAtMs] = useState(0);
@@ -581,6 +582,31 @@ const GameDetail = () => {
       if (prev.length <= 1) return prev;
       return prev.filter((item) => String(item || '').toLowerCase() !== subreddit);
     });
+  };
+
+  const addManualSubreddit = () => {
+    const normalized = String(manualSubredditInput || '').replace(/^r\//i, '').trim();
+    if (!normalized) {
+      setMultiScanError('Enter a subreddit name to add.');
+      return;
+    }
+
+    const exists = selectedSubreddits.some(
+      (item) => String(item || '').toLowerCase() === normalized.toLowerCase()
+    );
+    if (exists) {
+      setMultiScanError(`r/${normalized} is already selected.`);
+      return;
+    }
+
+    if (selectedSubreddits.length >= 5) {
+      setMultiScanError('You can select up to 5 subreddits.');
+      return;
+    }
+
+    addSelectedSubreddit(normalized);
+    setManualSubredditInput('');
+    setMultiScanError('');
   };
 
   const discoverCommunities = async () => {
@@ -845,7 +871,34 @@ const GameDetail = () => {
             })}
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <input
+              type="text"
+              value={manualSubredditInput}
+              onChange={(e) => {
+                setManualSubredditInput(e.target.value);
+                if (multiScanError) setMultiScanError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addManualSubreddit();
+                }
+              }}
+              placeholder="Add subreddit manually (e.g. Eldenring)"
+              className="w-full p-3 bg-black/40 border border-white/10 rounded text-white"
+            />
+            <button
+              type="button"
+              onClick={addManualSubreddit}
+              disabled={selectedSubreddits.length >= 5}
+              className="px-4 py-2 border border-[#D3F34B]/40 text-[#e7ff8b] hover:text-white hover:border-[#D3F34B]/70 disabled:opacity-60"
+            >
+              Add Subreddit
+            </button>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-2">
             <button
               type="button"
               onClick={discoverCommunities}
@@ -863,6 +916,8 @@ const GameDetail = () => {
               {multiScanning ? 'Running Combined Scan...' : 'Run Combined Scan'}
             </button>
           </div>
+
+          <p className="mt-2 text-xs text-zinc-500">You can manually add up to 5 total subreddits (including discovered ones).</p>
 
           {discoveringCommunities ? (
             <div className="mt-4">
