@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import api from '../api/axios';
 import ActionProgressLoader from '../components/ActionProgressLoader';
@@ -215,12 +215,20 @@ const Dashboard = () => {
               <p className="text-xs text-zinc-500">Signed in as {user.email}</p>
             </div>
           </div>
-          <button
-            onClick={logout}
-            className="px-4 py-2 border border-white/10 text-zinc-300 hover:text-white hover:border-white/30 transition-colors"
-          >
-            Logout
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/account"
+              className="px-4 py-2 border border-white/10 text-zinc-300 hover:text-white hover:border-white/30 transition-colors"
+            >
+              Account
+            </Link>
+            <button
+              onClick={logout}
+              className="px-4 py-2 border border-white/10 text-zinc-300 hover:text-white hover:border-white/30 transition-colors"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
@@ -419,4 +427,3 @@ const Dashboard = () => {
 };
 
 export default Dashboard;
-

@@ -2,11 +2,13 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
+import httpx
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from .. import database
 from ..models import Token, UserCreate
@@ -43,13 +45,34 @@ AUTH0_CLIENT_ID = clean_env(os.getenv("AUTH0_CLIENT_ID"))
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
 AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
 
+AUTH0_DB_CONNECTION = clean_env(os.getenv("AUTH0_DB_CONNECTION")) or "Username-Password-Authentication"
+AUTH0_MGMT_CLIENT_ID = clean_env(os.getenv("AUTH0_MGMT_CLIENT_ID"))
+AUTH0_MGMT_CLIENT_SECRET = clean_env(os.getenv("AUTH0_MGMT_CLIENT_SECRET"))
+AUTH0_MGMT_AUDIENCE = clean_env(os.getenv("AUTH0_MGMT_AUDIENCE")) or (
+    f"https://{AUTH0_DOMAIN}/api/v2/" if AUTH0_DOMAIN else ""
+)
+AUTH0_MGMT_TOKEN_URL = f"{AUTH0_ISSUER}oauth/token" if AUTH0_ISSUER else ""
+AUTH0_MGMT_USERS_URL = f"{AUTH0_ISSUER}api/v2/users" if AUTH0_ISSUER else ""
+
 AUTH_RATE_WINDOW_SECONDS = parse_int_env(os.getenv("AUTH_RATE_WINDOW_SECONDS"), default=600)
 AUTH_LOGIN_RATE_LIMIT = parse_int_env(os.getenv("AUTH_LOGIN_RATE_LIMIT"), default=60)
 AUTH_SIGNUP_RATE_LIMIT = parse_int_env(os.getenv("AUTH_SIGNUP_RATE_LIMIT"), default=30)
+AUTH_PASSWORD_RESET_RATE_LIMIT = parse_int_env(os.getenv("AUTH_PASSWORD_RESET_RATE_LIMIT"), default=20)
 
 
 def _auth0_enabled() -> bool:
     return bool(AUTH0_DOMAIN and AUTH0_AUDIENCE and AUTH0_ISSUER and AUTH0_JWKS_URL)
+
+
+def _auth0_mgmt_enabled() -> bool:
+    return bool(
+        _auth0_enabled()
+        and AUTH0_MGMT_CLIENT_ID
+        and AUTH0_MGMT_CLIENT_SECRET
+        and AUTH0_MGMT_AUDIENCE
+        and AUTH0_MGMT_TOKEN_URL
+        and AUTH0_MGMT_USERS_URL
+    )
 
 
 def _legacy_auth_enabled() -> bool:
@@ -103,6 +126,21 @@ def _derive_name(email: str, fallback: str = "") -> str:
         return email_value.split("@", 1)[0]
 
     return "Auth0 User"
+
+
+def _auth_provider_label(user: Dict[str, Any]) -> str:
+    auth0_sub = _first_non_empty(user.get("auth0_sub"))
+    if "|" in auth0_sub:
+        return auth0_sub.split("|", 1)[0]
+    return str(user.get("auth_provider") or "email")
+
+
+def _is_database_auth0_user(user: Dict[str, Any]) -> bool:
+    if str(user.get("auth_provider") or "").strip().lower() != "auth0":
+        return False
+
+    auth0_sub = _first_non_empty(user.get("auth0_sub"))
+    return auth0_sub.lower().startswith("auth0|")
 
 
 def _ensure_auth_rate_limit(scope: str, request: Request, limit: int) -> None:
@@ -232,9 +270,100 @@ async def _get_or_create_auth0_user(claims: Dict[str, Any]) -> Optional[Dict[str
     return user_doc
 
 
+async def _send_auth0_password_reset_email(email: str) -> None:
+    if not _auth0_enabled() or not AUTH0_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Auth0 password reset is not configured")
+
+    payload = {
+        "client_id": AUTH0_CLIENT_ID,
+        "email": str(email or "").strip().lower(),
+        "connection": AUTH0_DB_CONNECTION,
+    }
+
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        resp = await client.post(
+            f"{AUTH0_ISSUER}dbconnections/change_password",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+
+    if resp.status_code in (200, 201):
+        return
+
+    detail = (resp.text or "").strip()
+    if resp.status_code == 400:
+        lowered = detail.lower()
+        # Avoid user enumeration; treat unknown users as success response.
+        if "user does not exist" in lowered or "no user" in lowered:
+            return
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"Auth0 password reset request failed (HTTP {resp.status_code})",
+    )
+
+
+async def _get_auth0_management_token() -> str:
+    if not _auth0_mgmt_enabled():
+        raise RuntimeError("Auth0 management credentials are not configured")
+
+    payload = {
+        "client_id": AUTH0_MGMT_CLIENT_ID,
+        "client_secret": AUTH0_MGMT_CLIENT_SECRET,
+        "audience": AUTH0_MGMT_AUDIENCE,
+        "grant_type": "client_credentials",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        resp = await client.post(
+            AUTH0_MGMT_TOKEN_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Auth0 management token request failed (HTTP {resp.status_code})")
+
+    data = resp.json() if resp.content else {}
+    token = str(data.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Auth0 management token response missing access_token")
+
+    return token
+
+
+async def _delete_auth0_identity(auth0_sub: str) -> bool:
+    normalized = _first_non_empty(auth0_sub)
+    if not normalized or not _auth0_mgmt_enabled():
+        return False
+
+    try:
+        token = await _get_auth0_management_token()
+        encoded_sub = quote(normalized, safe="")
+
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.delete(
+                f"{AUTH0_MGMT_USERS_URL}/{encoded_sub}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        if resp.status_code in (200, 204, 404):
+            return True
+
+        print(f"Auth0 identity delete failed for {normalized}: HTTP {resp.status_code} {resp.text[:200]}")
+        return False
+    except Exception as exc:
+        print(f"Auth0 identity delete error for {normalized}: {exc}")
+        return False
+
+
 class LoginData(BaseModel):
     email: str
     password: str
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
 
 
 @router.post("/signup")
@@ -312,6 +441,34 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     return user
 
 
+@router.post("/password-reset-request")
+async def password_reset_request(payload: PasswordResetRequest, request: Request):
+    _ensure_auth_rate_limit("password_reset_request", request, AUTH_PASSWORD_RESET_RATE_LIMIT)
+
+    await _send_auth0_password_reset_email(str(payload.email or "").strip().lower())
+
+    return {"message": "If an account exists, a password reset email has been sent."}
+
+
+@router.post("/password-reset")
+async def password_reset_current_user(request: Request, user=Depends(get_current_user)):
+    _ensure_auth_rate_limit("password_reset_current_user", request, AUTH_PASSWORD_RESET_RATE_LIMIT)
+
+    if not _is_database_auth0_user(user):
+        raise HTTPException(
+            status_code=400,
+            detail="Password reset is available only for email/password Auth0 accounts.",
+        )
+
+    email = str(user.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Current account does not have a resettable email")
+
+    await _send_auth0_password_reset_email(email)
+
+    return {"message": "Password reset email sent."}
+
+
 @router.get("/me")
 async def me(user=Depends(get_current_user)):
     if user:
@@ -322,6 +479,56 @@ async def me(user=Depends(get_current_user)):
             "auth_provider": user.get("auth_provider", "email"),
         }
     raise HTTPException(status_code=401)
+
+
+@router.get("/account")
+async def account(user=Depends(get_current_user)):
+    provider = _auth_provider_label(user)
+    can_reset_password = _is_database_auth0_user(user)
+
+    return {
+        "email": user.get("email", ""),
+        "name": user.get("name", ""),
+        "user_id": user.get("user_id", ""),
+        "auth_provider": user.get("auth_provider", "email"),
+        "provider": provider,
+        "auth0_sub": user.get("auth0_sub", ""),
+        "can_reset_password": can_reset_password,
+        "management_delete_configured": _auth0_mgmt_enabled(),
+    }
+
+
+@router.delete("/account")
+async def delete_account(user=Depends(get_current_user)):
+    user_id = str(user.get("user_id") or "").strip()
+    auth0_sub = _first_non_empty(user.get("auth0_sub"))
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Invalid account state")
+
+    owned_game_ids: List[str] = []
+    cursor = database.db.tracked_games.find({"user_id": user_id}, {"_id": 1})
+    async for game in cursor:
+        game_id = str(game.get("_id") or "").strip()
+        if game_id:
+            owned_game_ids.append(game_id)
+
+    if owned_game_ids:
+        await database.db.scan_results.delete_many({"game_id": {"$in": owned_game_ids}})
+
+    await database.db.scan_results.delete_many({"user_id": user_id})
+    await database.db.tracked_games.delete_many({"user_id": user_id})
+    await database.db.users.delete_one({"user_id": user_id})
+
+    auth0_identity_deleted = False
+    if auth0_sub:
+        auth0_identity_deleted = await _delete_auth0_identity(auth0_sub)
+
+    return {
+        "message": "Account data deleted",
+        "auth0_identity_deleted": auth0_identity_deleted,
+        "requires_auth0_manual_delete": bool(auth0_sub and not auth0_identity_deleted),
+    }
 
 
 @router.post("/logout")

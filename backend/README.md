@@ -21,6 +21,18 @@ FastAPI backend for the Sentient Tracker application.
    uvicorn app.main:app --reload
    ```
 
+## Auth Notes
+
+- Password reset endpoint (`POST /api/auth/password-reset-request`) uses Auth0 and requires:
+  - `AUTH0_DOMAIN`
+  - `AUTH0_CLIENT_ID`
+  - `AUTH0_DB_CONNECTION` (defaults to `Username-Password-Authentication`)
+- Account deletion endpoint removes app data immediately.
+- Automatic deletion of Auth0 identities during account deletion is optional and requires:
+  - `AUTH0_MGMT_CLIENT_ID`
+  - `AUTH0_MGMT_CLIENT_SECRET`
+  - `AUTH0_MGMT_AUDIENCE` (typically `https://<AUTH0_DOMAIN>/api/v2/`)
+
 ## Testing
 
 Run the test suite with:

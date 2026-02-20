@@ -49,12 +49,18 @@ const Login = () => {
         {error ? <p className="text-red-400 text-sm mt-4">{error}</p> : null}
         {authError ? <p className="text-amber-300 text-sm mt-2">{authError}</p> : null}
 
-        <p className="text-sm text-zinc-400 mt-6">
-          Need an account?{' '}
-          <Link to="/signup" className="text-[#D3F34B] hover:underline">
-            Sign up
+        <div className="mt-6 flex items-center justify-between gap-4 text-sm text-zinc-400">
+          <Link to="/forgot-password" className="text-[#8BE8FF] hover:underline">
+            Forgot password?
           </Link>
-        </p>
+
+          <p>
+            Need an account?{' '}
+            <Link to="/signup" className="text-[#D3F34B] hover:underline">
+              Sign up
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );

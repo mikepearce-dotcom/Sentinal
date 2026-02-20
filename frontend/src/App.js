@@ -4,8 +4,10 @@ import { AuthProvider, AuthContext } from './context/AuthContext';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import ForgotPassword from './pages/ForgotPassword';
 import Dashboard from './pages/Dashboard';
 import GameDetail from './pages/GameDetail';
+import Account from './pages/Account';
 
 function AppRoutes() {
   const { user, authLoading } = useContext(AuthContext);
@@ -23,8 +25,10 @@ function AppRoutes() {
       <Route path="/" element={<Landing />} />
       <Route path="/app" element={user ? <Dashboard /> : <Navigate to="/login" />} />
       <Route path="/games/:id" element={user ? <GameDetail /> : <Navigate to="/login" />} />
+      <Route path="/account" element={user ? <Account /> : <Navigate to="/login" />} />
       <Route path="/login" element={!user ? <Login /> : <Navigate to="/app" />} />
       <Route path="/signup" element={!user ? <Signup /> : <Navigate to="/app" />} />
+      <Route path="/forgot-password" element={!user ? <ForgotPassword /> : <Navigate to="/app" />} />
       <Route path="*" element={<Navigate to={user ? '/app' : '/'} />} />
     </Routes>
   );
