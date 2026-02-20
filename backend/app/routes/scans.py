@@ -24,6 +24,17 @@ def _safe_list(value: Any) -> List[Dict[str, Any]]:
     return value if isinstance(value, list) else []
 
 
+def _scan_filter_for_user_game(game_id: str, user_id: str) -> Dict[str, Any]:
+    # Keep legacy compatibility for historical rows that predate user_id tagging.
+    return {
+        "game_id": game_id,
+        "$or": [
+            {"user_id": user_id},
+            {"user_id": {"$exists": False}},
+        ],
+    }
+
+
 def _scan_out_from_doc(doc: Dict[str, Any]) -> ScanResultOut:
     posts = _safe_list(doc.get("posts"))
     comments = _safe_list(doc.get("comments"))
@@ -79,6 +90,7 @@ async def run_multi_scan(payload: MultiScanRequest, user=Depends(get_current_use
         scan_doc = {
             "_id": str(uuid.uuid4()),
             "game_id": game_id,
+            "user_id": user["user_id"],
             "created_at": datetime.utcnow(),
             "posts": _safe_list(result.get("_posts")),
             "comments": _safe_list(result.get("_comments")),
@@ -139,6 +151,7 @@ async def run_scan(id: str, user=Depends(get_current_user)):
     result = {
         "_id": str(uuid.uuid4()),
         "game_id": id,
+        "user_id": user["user_id"],
         "created_at": datetime.utcnow(),
         "posts": posts,
         "comments": comments,
@@ -155,7 +168,7 @@ async def list_results(id: str, user=Depends(get_current_user)):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    cursor = database.db.scan_results.find({"game_id": id}).sort("created_at", -1)
+    cursor = database.db.scan_results.find(_scan_filter_for_user_game(id, user["user_id"])).sort("created_at", -1)
     results: List[ScanResultOut] = []
     async for r in cursor:
         results.append(_scan_out_from_doc(r))
@@ -168,7 +181,10 @@ async def latest_result(id: str, user=Depends(get_current_user)):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    r = await database.db.scan_results.find_one({"game_id": id}, sort=[("created_at", -1)])
+    r = await database.db.scan_results.find_one(
+        _scan_filter_for_user_game(id, user["user_id"]),
+        sort=[("created_at", -1)],
+    )
     if not r:
         raise HTTPException(status_code=404)
     return _scan_out_from_doc(r)
@@ -180,7 +196,10 @@ async def latest_result_detail(id: str, user=Depends(get_current_user)):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
-    r = await database.db.scan_results.find_one({"game_id": id}, sort=[("created_at", -1)])
+    r = await database.db.scan_results.find_one(
+        _scan_filter_for_user_game(id, user["user_id"]),
+        sort=[("created_at", -1)],
+    )
     if not r:
         raise HTTPException(status_code=404, detail="No scan results yet")
     return _scan_detail_out_from_doc(r)

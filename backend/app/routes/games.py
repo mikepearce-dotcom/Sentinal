@@ -86,4 +86,15 @@ async def delete_game(id: str, user=Depends(get_current_user)):
     res = await database.db.tracked_games.delete_one({"_id": id, "user_id": user["user_id"]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404)
+
+    await database.db.scan_results.delete_many(
+        {
+            "game_id": id,
+            "$or": [
+                {"user_id": user["user_id"]},
+                {"user_id": {"$exists": False}},
+            ],
+        }
+    )
+
     return {"message": "deleted"}
