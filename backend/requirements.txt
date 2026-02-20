@@ -6,8 +6,9 @@ python-dotenv
 bcrypt
 email-validator
 httpx
-pyjwt
+pyjwt[crypto]
 pytest
 pytest-asyncio
 
 openai==0.28.1
+

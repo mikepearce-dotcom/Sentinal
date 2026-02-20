@@ -19,11 +19,34 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60
 
+def _clean_env(value: Optional[str]) -> str:
+    return str(value or "").strip().strip('"').strip("'")
+
+
+def _normalize_auth0_domain(value: Optional[str]) -> str:
+    cleaned = _clean_env(value).rstrip("/")
+    lower = cleaned.lower()
+    if lower.startswith("https://"):
+        cleaned = cleaned[8:]
+    elif lower.startswith("http://"):
+        cleaned = cleaned[7:]
+    return cleaned.strip().lower()
+
+
+def _normalize_auth0_audience(value: Optional[str]) -> str:
+    return _clean_env(value).rstrip("/")
+
+
 # Auth0 configuration
-AUTH0_DOMAIN = (os.getenv("AUTH0_DOMAIN") or "").strip()
-AUTH0_AUDIENCE = (os.getenv("AUTH0_AUDIENCE") or "").strip()
+AUTH0_DOMAIN = _normalize_auth0_domain(os.getenv("AUTH0_DOMAIN"))
+AUTH0_AUDIENCE = _normalize_auth0_audience(os.getenv("AUTH0_AUDIENCE"))
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
 AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
+
+if AUTH0_DOMAIN or AUTH0_AUDIENCE:
+    print(f"Auth0 config loaded: domain={AUTH0_DOMAIN}, audience={AUTH0_AUDIENCE}")
+else:
+    print("Auth0 config missing; using legacy JWT mode.")
 
 
 def _auth0_enabled() -> bool:
@@ -79,14 +102,21 @@ def _decode_auth0_access_token(token: str) -> Dict[str, Any]:
             return {}
 
         signing_key = jwks.get_signing_key_from_jwt(token)
+        expected_audience = [AUTH0_AUDIENCE]
+        if AUTH0_AUDIENCE.endswith("/"):
+            expected_audience.append(AUTH0_AUDIENCE.rstrip("/"))
+        else:
+            expected_audience.append(f"{AUTH0_AUDIENCE}/")
+
         return jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            audience=AUTH0_AUDIENCE,
+            audience=expected_audience,
             issuer=AUTH0_ISSUER,
         )
-    except Exception:
+    except Exception as exc:
+        print(f"Auth0 token decode failed: {type(exc).__name__}: {exc}")
         return {}
 
 
@@ -218,3 +248,5 @@ async def me(user=Depends(get_current_user)):
 @router.post("/logout")
 async def logout():
     return {"message": "logged out"}
+
+
