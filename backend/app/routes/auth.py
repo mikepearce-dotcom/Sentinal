@@ -1,15 +1,16 @@
 import os
 import uuid
-import jwt
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+import jwt
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import database
 from ..models import Token, UserCreate
+from ..security import allow_request, clean_env, client_ip, env_truthy, parse_int_env
 from ..utils import hash_password, verify_password
 
 router = APIRouter()
@@ -19,12 +20,11 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
 JWT_ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60
 
-def _clean_env(value: Optional[str]) -> str:
-    return str(value or "").strip().strip('"').strip("'")
 
+# Auth0 configuration
 
 def _normalize_auth0_domain(value: Optional[str]) -> str:
-    cleaned = _clean_env(value).rstrip("/")
+    cleaned = clean_env(value).rstrip("/")
     lower = cleaned.lower()
     if lower.startswith("https://"):
         cleaned = cleaned[8:]
@@ -34,23 +34,49 @@ def _normalize_auth0_domain(value: Optional[str]) -> str:
 
 
 def _normalize_auth0_audience(value: Optional[str]) -> str:
-    return _clean_env(value).rstrip("/")
+    return clean_env(value).rstrip("/")
 
 
-# Auth0 configuration
 AUTH0_DOMAIN = _normalize_auth0_domain(os.getenv("AUTH0_DOMAIN"))
 AUTH0_AUDIENCE = _normalize_auth0_audience(os.getenv("AUTH0_AUDIENCE"))
+AUTH0_CLIENT_ID = clean_env(os.getenv("AUTH0_CLIENT_ID"))
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
 AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
 
-if AUTH0_DOMAIN or AUTH0_AUDIENCE:
-    print(f"Auth0 config loaded: domain={AUTH0_DOMAIN}, audience={AUTH0_AUDIENCE}")
-else:
-    print("Auth0 config missing; using legacy JWT mode.")
+AUTH_RATE_WINDOW_SECONDS = parse_int_env(os.getenv("AUTH_RATE_WINDOW_SECONDS"), default=600)
+AUTH_LOGIN_RATE_LIMIT = parse_int_env(os.getenv("AUTH_LOGIN_RATE_LIMIT"), default=60)
+AUTH_SIGNUP_RATE_LIMIT = parse_int_env(os.getenv("AUTH_SIGNUP_RATE_LIMIT"), default=30)
 
 
 def _auth0_enabled() -> bool:
     return bool(AUTH0_DOMAIN and AUTH0_AUDIENCE and AUTH0_ISSUER and AUTH0_JWKS_URL)
+
+
+def _legacy_auth_enabled() -> bool:
+    explicit = clean_env(os.getenv("ALLOW_LEGACY_AUTH"))
+    if explicit:
+        return env_truthy(explicit, default=False)
+
+    running_on_railway = any(
+        clean_env(os.getenv(name))
+        for name in ("RAILWAY_ENVIRONMENT", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID")
+    )
+    if running_on_railway or AUTH0_DOMAIN or AUTH0_AUDIENCE:
+        # Secure default for deployed/Auth0-configured environments.
+        return False
+
+    return True
+
+
+if _auth0_enabled():
+    print(
+        "Auth mode: auth0 "
+        f"(domain={AUTH0_DOMAIN}, audience={AUTH0_AUDIENCE}, client_id={'set' if AUTH0_CLIENT_ID else 'unset'})"
+    )
+elif _legacy_auth_enabled():
+    print("Auth mode: legacy JWT")
+else:
+    print("Auth mode: misconfigured (Auth0 disabled and legacy auth not allowed)")
 
 
 @lru_cache(maxsize=1)
@@ -77,6 +103,14 @@ def _derive_name(email: str, fallback: str = "") -> str:
         return email_value.split("@", 1)[0]
 
     return "Auth0 User"
+
+
+def _ensure_auth_rate_limit(scope: str, request: Request, limit: int) -> None:
+    key = f"auth:{scope}:{client_ip(request)}"
+    if allow_request(key, limit=limit, window_seconds=AUTH_RATE_WINDOW_SECONDS):
+        return
+
+    raise HTTPException(status_code=429, detail="Too many authentication attempts. Please try again shortly.")
 
 
 def create_access_token(user_id: str) -> str:
@@ -108,13 +142,20 @@ def _decode_auth0_access_token(token: str) -> Dict[str, Any]:
         else:
             expected_audience.append(f"{AUTH0_AUDIENCE}/")
 
-        return jwt.decode(
+        decoded = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
             audience=expected_audience,
             issuer=AUTH0_ISSUER,
         )
+
+        if AUTH0_CLIENT_ID:
+            azp = _first_non_empty(decoded.get("azp"), decoded.get("client_id"))
+            if azp != AUTH0_CLIENT_ID:
+                raise jwt.InvalidTokenError("Token authorized party does not match expected client")
+
+        return decoded
     except Exception as exc:
         print(f"Auth0 token decode failed: {type(exc).__name__}: {exc}")
         return {}
@@ -130,29 +171,54 @@ async def _get_or_create_auth0_user(claims: Dict[str, Any]) -> Optional[Dict[str
         return existing
 
     email = _first_non_empty(claims.get("email"), claims.get("upn"), claims.get("preferred_username"))
-    name = _derive_name(
-        email,
-        _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name")),
-    )
+    email_verified_raw = claims.get("email_verified")
+    email_verified = email_verified_raw is True or str(email_verified_raw).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    if email:
+        by_email = await database.db.users.find_one({"email": email})
+        if by_email:
+            existing_sub = _first_non_empty(by_email.get("auth0_sub"))
+            if existing_sub and existing_sub != auth0_sub:
+                print("Auth0 link blocked: email belongs to a different Auth0 subject")
+                return None
+
+            if not email_verified:
+                print("Auth0 link blocked: email is not verified")
+                return None
+
+            name = _derive_name(
+                email,
+                _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name")),
+            )
+            await database.db.users.update_one(
+                {"_id": by_email["_id"]},
+                {
+                    "$set": {
+                        "auth0_sub": auth0_sub,
+                        "auth_provider": "auth0",
+                        "name": by_email.get("name") or name,
+                    }
+                },
+            )
+            refreshed = await database.db.users.find_one({"_id": by_email["_id"]})
+            return refreshed or by_email
+
+    # Do not trust unverified email claims as canonical identity.
+    if email and not email_verified:
+        email = ""
 
     if not email:
         safe_sub = auth0_sub.replace("|", ".").replace(" ", "")
         email = f"{safe_sub}@auth0.local"
 
-    by_email = await database.db.users.find_one({"email": email})
-    if by_email:
-        await database.db.users.update_one(
-            {"_id": by_email["_id"]},
-            {
-                "$set": {
-                    "auth0_sub": auth0_sub,
-                    "auth_provider": "auth0",
-                    "name": by_email.get("name") or name,
-                }
-            },
-        )
-        refreshed = await database.db.users.find_one({"_id": by_email["_id"]})
-        return refreshed or by_email
+    name = _derive_name(
+        email,
+        _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name")),
+    )
 
     user_doc = {
         "user_id": str(uuid.uuid4()),
@@ -172,7 +238,12 @@ class LoginData(BaseModel):
 
 
 @router.post("/signup")
-async def signup(user: UserCreate):
+async def signup(user: UserCreate, request: Request):
+    _ensure_auth_rate_limit("signup", request, AUTH_SIGNUP_RATE_LIMIT)
+
+    if not _legacy_auth_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
     email = str(user.email or "").strip().lower()
     existing = await database.db.users.find_one({"email": email})
     if existing:
@@ -190,7 +261,12 @@ async def signup(user: UserCreate):
 
 
 @router.post("/login", response_model=Token)
-async def login(data: LoginData):
+async def login(data: LoginData, request: Request):
+    _ensure_auth_rate_limit("login", request, AUTH_LOGIN_RATE_LIMIT)
+
+    if not _legacy_auth_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
     email = str(data.email or "").strip().lower()
     user = await database.db.users.find_one({"email": email})
     if not user:
@@ -221,6 +297,9 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
 
         return user
 
+    if not _legacy_auth_enabled():
+        raise HTTPException(status_code=503, detail="Authentication misconfigured")
+
     data = decode_access_token(token)
     user_id = data.get("user_id")
     if not user_id:
@@ -248,5 +327,3 @@ async def me(user=Depends(get_current_user)):
 @router.post("/logout")
 async def logout():
     return {"message": "logged out"}
-
-

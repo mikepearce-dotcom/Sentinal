@@ -1,15 +1,20 @@
+import os
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List
-import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import database, services
 from ..models import ScanResultDetailOut, ScanResultOut
+from ..security import allow_request, client_ip, parse_int_env
 from .auth import get_current_user
 
 router = APIRouter()
+
+SCAN_RATE_LIMIT = parse_int_env(os.getenv("SCAN_RATE_LIMIT"), default=20)
+SCAN_RATE_WINDOW_SECONDS = parse_int_env(os.getenv("SCAN_RATE_WINDOW_SECONDS"), default=300)
 
 
 class MultiScanRequest(BaseModel):
@@ -22,6 +27,14 @@ class MultiScanRequest(BaseModel):
 
 def _safe_list(value: Any) -> List[Dict[str, Any]]:
     return value if isinstance(value, list) else []
+
+
+def _enforce_scan_rate_limit(request: Request, user_id: str, scope: str) -> None:
+    key = f"scan:{scope}:{user_id}:{client_ip(request)}"
+    if allow_request(key, limit=SCAN_RATE_LIMIT, window_seconds=SCAN_RATE_WINDOW_SECONDS):
+        return
+
+    raise HTTPException(status_code=429, detail="Too many scan requests. Please wait and try again.")
 
 
 def _scan_filter_for_user_game(game_id: str, user_id: str) -> Dict[str, Any]:
@@ -58,7 +71,9 @@ def _scan_detail_out_from_doc(doc: Dict[str, Any]) -> ScanResultDetailOut:
 
 
 @router.post("/multi-scan")
-async def run_multi_scan(payload: MultiScanRequest, user=Depends(get_current_user)):
+async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depends(get_current_user)):
+    _enforce_scan_rate_limit(request, user["user_id"], scope="multi")
+
     if not payload.subreddits:
         raise HTTPException(status_code=400, detail="At least one subreddit is required")
 
@@ -109,7 +124,9 @@ async def run_multi_scan(payload: MultiScanRequest, user=Depends(get_current_use
 
 
 @router.post("/{id}/scan")
-async def run_scan(id: str, user=Depends(get_current_user)):
+async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
+    _enforce_scan_rate_limit(request, user["user_id"], scope="single")
+
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")

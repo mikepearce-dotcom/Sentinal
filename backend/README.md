@@ -14,7 +14,8 @@ FastAPI backend for the Sentient Tracker application.
    pip install -r requirements.txt
    ```
 3. Copy `.env.example` to `.env` and fill in environment variables.
-   Add a `JWT_SECRET` value (used to sign auth tokens).
+   For production, set `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, and `AUTH0_CLIENT_ID`.
+   Keep `ALLOW_LEGACY_AUTH` unset (or `false`) in production to avoid legacy-token fallback.
 4. Run the server:
    ```bash
    uvicorn app.main:app --reload
@@ -27,7 +28,7 @@ Run the test suite with:
 pytest
 ```
 
-The tests clear the database collections automatically, so they can be run repeatedly.  
+The tests clear the database collections automatically, so they can be run repeatedly.
 If you need to point tests at a different Mongo instance, set `MONGO_URL` before running.
 
 ## Structure
@@ -36,4 +37,3 @@ If you need to point tests at a different Mongo instance, set `MONGO_URL` before
 - `app/routes/` - API route modules
 - `app/database.py` - MongoDB connection
 - `app/models.py` - Pydantic schemas
-
