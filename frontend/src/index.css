@@ -275,3 +275,238 @@ button:focus-visible {
     transform: scale(1.25);
   }
 }
+
+.landing-page {
+  position: relative;
+  isolation: isolate;
+  overflow-x: clip;
+}
+
+.landing-header-backdrop {
+  background: rgba(7, 8, 12, 0.7);
+  backdrop-filter: blur(14px);
+}
+
+.landing-grid-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(circle at 20% 20%, rgba(0, 229, 255, 0.12), transparent 38%),
+    radial-gradient(circle at 80% 10%, rgba(211, 243, 75, 0.1), transparent 34%),
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: auto, auto, 36px 36px, 36px 36px;
+  mask-image: radial-gradient(circle at center, black, rgba(0, 0, 0, 0.25));
+}
+
+.landing-hero-shell {
+  display: flex;
+  justify-content: center;
+}
+
+.landing-hero-visual {
+  position: relative;
+  width: min(520px, 100%);
+  aspect-ratio: 1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(0, 229, 255, 0.18), rgba(3, 5, 9, 0.95) 58%),
+    linear-gradient(145deg, rgba(211, 243, 75, 0.06), rgba(0, 0, 0, 0.15));
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.45), 0 24px 80px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.landing-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 148px;
+  height: 148px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: 1px solid rgba(211, 243, 75, 0.55);
+  background: radial-gradient(circle, rgba(211, 243, 75, 0.28) 0%, rgba(9, 10, 14, 0.25) 70%);
+  box-shadow: 0 0 36px rgba(211, 243, 75, 0.35);
+  animation: landing-pulse 2.4s ease-in-out infinite;
+}
+
+.landing-scan-beam {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 45%;
+  transform-origin: bottom center;
+  background: linear-gradient(to top, rgba(124, 255, 154, 0.1), rgba(124, 255, 154, 0.8));
+  filter: drop-shadow(0 0 10px rgba(124, 255, 154, 0.6));
+  animation: landing-scan 4.5s linear infinite;
+}
+
+.landing-orbit {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.landing-orbit-a {
+  width: 240px;
+  height: 240px;
+  margin-left: -120px;
+  margin-top: -120px;
+  animation: landing-rotate 14s linear infinite;
+}
+
+.landing-orbit-b {
+  width: 340px;
+  height: 340px;
+  margin-left: -170px;
+  margin-top: -170px;
+  border-color: rgba(0, 229, 255, 0.25);
+  animation: landing-rotate 22s linear infinite reverse;
+}
+
+.landing-orbit-c {
+  width: 430px;
+  height: 430px;
+  margin-left: -215px;
+  margin-top: -215px;
+  border-color: rgba(211, 243, 75, 0.24);
+  animation: landing-rotate 30s linear infinite;
+}
+
+.landing-signal-card {
+  position: absolute;
+  width: min(220px, calc(100% - 1.5rem));
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(6, 9, 14, 0.84);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  animation: landing-drift 6.5s ease-in-out infinite;
+}
+
+.landing-signal-card-a {
+  top: 12%;
+  left: 8%;
+  animation-delay: -0.4s;
+}
+
+.landing-signal-card-b {
+  right: 8%;
+  top: 32%;
+  animation-delay: -2.2s;
+}
+
+.landing-signal-card-c {
+  left: 16%;
+  bottom: 10%;
+  animation-delay: -3.4s;
+}
+
+@keyframes landing-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes landing-drift {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-11px);
+  }
+}
+
+@keyframes landing-pulse {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+}
+
+@keyframes landing-scan {
+  0% {
+    transform: translate(-50%, -100%) rotate(0deg);
+  }
+  100% {
+    transform: translate(-50%, -100%) rotate(360deg);
+  }
+}
+
+@media (max-width: 1024px) {
+  .landing-hero-visual {
+    width: min(460px, 100%);
+  }
+
+  .landing-orbit-c {
+    width: 380px;
+    height: 380px;
+    margin-left: -190px;
+    margin-top: -190px;
+  }
+}
+
+@media (max-width: 640px) {
+  .landing-grid-overlay {
+    background-size: auto, auto, 28px 28px, 28px 28px;
+  }
+
+  .landing-hero-visual {
+    width: 100%;
+    min-height: 360px;
+  }
+
+  .landing-core {
+    width: 124px;
+    height: 124px;
+  }
+
+  .landing-orbit-a {
+    width: 200px;
+    height: 200px;
+    margin-left: -100px;
+    margin-top: -100px;
+  }
+
+  .landing-orbit-b {
+    width: 280px;
+    height: 280px;
+    margin-left: -140px;
+    margin-top: -140px;
+  }
+
+  .landing-orbit-c {
+    width: 330px;
+    height: 330px;
+    margin-left: -165px;
+    margin-top: -165px;
+  }
+
+  .landing-signal-card {
+    width: calc(100% - 2rem);
+  }
+
+  .landing-signal-card-b {
+    right: 1rem;
+    top: 42%;
+  }
+
+  .landing-signal-card-c {
+    left: 1rem;
+    bottom: 1rem;
+  }
+}
+
+

@@ -553,7 +553,7 @@ const GameDetail = () => {
     setDeleting(true);
     try {
       await api.delete(`/api/games/${id}`);
-      navigate('/');
+      navigate('/app');
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setPageError(typeof detail === 'string' ? detail : 'Failed to delete game.');
@@ -773,7 +773,7 @@ const GameDetail = () => {
         <div className="max-w-5xl mx-auto card-glass p-8">
           <p className="text-red-400">{pageError || 'Unable to load this game.'}</p>
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/app')}
             className="mt-4 px-4 py-2 border border-white/15 text-zinc-300 hover:text-white"
           >
             Back to Dashboard
@@ -788,7 +788,7 @@ const GameDetail = () => {
       <header className="border-b border-white/5">
         <div className="max-w-[120rem] mx-auto px-4 md:px-8 py-4 flex items-center justify-between gap-3">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/app')}
             className="px-3 py-2 border border-white/15 text-sm text-zinc-300 hover:text-white hover:border-white/30"
           >
             Back to Dashboard
@@ -1301,4 +1301,5 @@ const GameDetail = () => {
 };
 
 export default GameDetail;
+
 
