@@ -58,6 +58,7 @@ AUTH_RATE_WINDOW_SECONDS = parse_int_env(os.getenv("AUTH_RATE_WINDOW_SECONDS"), 
 AUTH_LOGIN_RATE_LIMIT = parse_int_env(os.getenv("AUTH_LOGIN_RATE_LIMIT"), default=60)
 AUTH_SIGNUP_RATE_LIMIT = parse_int_env(os.getenv("AUTH_SIGNUP_RATE_LIMIT"), default=30)
 AUTH_PASSWORD_RESET_RATE_LIMIT = parse_int_env(os.getenv("AUTH_PASSWORD_RESET_RATE_LIMIT"), default=20)
+ACCOUNT_DELETE_ENABLED = env_truthy(os.getenv("ACCOUNT_DELETE_ENABLED"), default=False)
 
 
 def _auth0_enabled() -> bool:
@@ -495,11 +496,15 @@ async def account(user=Depends(get_current_user)):
         "auth0_sub": user.get("auth0_sub", ""),
         "can_reset_password": can_reset_password,
         "management_delete_configured": _auth0_mgmt_enabled(),
+        "account_delete_enabled": ACCOUNT_DELETE_ENABLED,
     }
 
 
 @router.delete("/account")
 async def delete_account(user=Depends(get_current_user)):
+    if not ACCOUNT_DELETE_ENABLED:
+        raise HTTPException(status_code=403, detail="Account deletion is currently disabled")
+
     user_id = str(user.get("user_id") or "").strip()
     auth0_sub = _first_non_empty(user.get("auth0_sub"))
 

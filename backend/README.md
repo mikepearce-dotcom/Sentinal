@@ -27,7 +27,7 @@ FastAPI backend for the Sentient Tracker application.
   - `AUTH0_DOMAIN`
   - `AUTH0_CLIENT_ID`
   - `AUTH0_DB_CONNECTION` (defaults to `Username-Password-Authentication`)
-- Account deletion endpoint removes app data immediately.
+- Account deletion endpoint can be toggled with `ACCOUNT_DELETE_ENABLED` and is disabled by default.
 - Automatic deletion of Auth0 identities during account deletion is optional and requires:
   - `AUTH0_MGMT_CLIENT_ID`
   - `AUTH0_MGMT_CLIENT_SECRET`
