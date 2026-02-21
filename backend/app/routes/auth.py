@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
@@ -44,6 +44,7 @@ AUTH0_AUDIENCE = _normalize_auth0_audience(os.getenv("AUTH0_AUDIENCE"))
 AUTH0_CLIENT_ID = clean_env(os.getenv("AUTH0_CLIENT_ID"))
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
 AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
+AUTH0_USERINFO_URL = f"{AUTH0_ISSUER}userinfo" if AUTH0_ISSUER else ""
 
 AUTH0_DB_CONNECTION = clean_env(os.getenv("AUTH0_DB_CONNECTION")) or "Username-Password-Authentication"
 AUTH0_MGMT_CLIENT_ID = clean_env(os.getenv("AUTH0_MGMT_CLIENT_ID"))
@@ -129,6 +130,41 @@ def _derive_name(email: str, fallback: str = "") -> str:
     return "Auth0 User"
 
 
+def _is_placeholder_name(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return not normalized or normalized in {"auth0 user", "user", "unknown"}
+
+
+def _is_placeholder_email(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return True
+    return normalized.endswith("@auth0.local")
+
+
+def _sanitize_profile_name(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    return normalized[:80]
+
+
+def _sanitize_avatar_url(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+
+    return normalized[:600]
+
+
+def _effective_avatar_url(user: Dict[str, Any]) -> str:
+    return _first_non_empty(user.get("avatar_url"), user.get("auth0_picture_url"))
+
+
 def _auth_provider_label(user: Dict[str, Any]) -> str:
     auth0_sub = _first_non_empty(user.get("auth0_sub"))
     if "|" in auth0_sub:
@@ -200,22 +236,126 @@ def _decode_auth0_access_token(token: str) -> Dict[str, Any]:
         return {}
 
 
-async def _get_or_create_auth0_user(claims: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def _fetch_auth0_userinfo(access_token: str) -> Dict[str, Any]:
+    token = _first_non_empty(access_token)
+    if not token or not _auth0_enabled() or not AUTH0_USERINFO_URL:
+        return {}
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(
+                AUTH0_USERINFO_URL,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception as exc:
+        print(f"Auth0 userinfo request failed: {type(exc).__name__}: {exc}")
+        return {}
+
+    if resp.status_code != 200:
+        print(f"Auth0 userinfo request failed: HTTP {resp.status_code}")
+        return {}
+
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        print(f"Auth0 userinfo decode failed: {type(exc).__name__}: {exc}")
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    return payload
+
+
+async def _get_or_create_auth0_user(claims: Dict[str, Any], access_token: str = "") -> Optional[Dict[str, Any]]:
     auth0_sub = _first_non_empty(claims.get("sub"))
     if not auth0_sub:
         return None
 
     existing = await database.db.users.find_one({"auth0_sub": auth0_sub})
+    needs_userinfo = (
+        not _first_non_empty(claims.get("email"), claims.get("upn"), claims.get("preferred_username"))
+        or not _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name"))
+        or not _first_non_empty(claims.get("picture"))
+    )
     if existing:
-        return existing
+        if _is_placeholder_email(existing.get("email")) or _is_placeholder_name(existing.get("name")):
+            needs_userinfo = True
+        if not _first_non_empty(existing.get("auth0_picture_url"), existing.get("avatar_url")):
+            needs_userinfo = True
 
-    email = _first_non_empty(claims.get("email"), claims.get("upn"), claims.get("preferred_username"))
-    email_verified_raw = claims.get("email_verified")
+    effective_claims: Dict[str, Any] = dict(claims or {})
+    if needs_userinfo:
+        userinfo = await _fetch_auth0_userinfo(access_token)
+        userinfo_sub = _first_non_empty(userinfo.get("sub"))
+        if userinfo and userinfo_sub and userinfo_sub != auth0_sub:
+            print("Auth0 userinfo ignored: sub mismatch")
+            userinfo = {}
+
+        if userinfo:
+            for key in (
+                "email",
+                "email_verified",
+                "name",
+                "nickname",
+                "given_name",
+                "family_name",
+                "picture",
+            ):
+                if key == "email_verified":
+                    if key not in effective_claims and key in userinfo:
+                        effective_claims[key] = userinfo.get(key)
+                    continue
+
+                if not _first_non_empty(effective_claims.get(key)):
+                    candidate = userinfo.get(key)
+                    if candidate not in (None, ""):
+                        effective_claims[key] = candidate
+
+    email = _first_non_empty(
+        effective_claims.get("email"),
+        effective_claims.get("upn"),
+        effective_claims.get("preferred_username"),
+    ).lower()
+    email_verified_raw = effective_claims.get("email_verified")
     email_verified = email_verified_raw is True or str(email_verified_raw).strip().lower() in {
         "1",
         "true",
         "yes",
     }
+    resolved_name = _derive_name(
+        email,
+        _first_non_empty(
+            effective_claims.get("name"),
+            effective_claims.get("nickname"),
+            effective_claims.get("given_name"),
+        ),
+    )
+    auth0_picture_url = _sanitize_avatar_url(_first_non_empty(effective_claims.get("picture")))
+
+    if existing:
+        updates: Dict[str, Any] = {}
+        existing_email = str(existing.get("email") or "").strip().lower()
+        existing_name = str(existing.get("name") or "").strip()
+
+        if email and email_verified and (_is_placeholder_email(existing_email) or not existing_email):
+            updates["email"] = email
+
+        if resolved_name and _is_placeholder_name(existing_name):
+            updates["name"] = resolved_name
+
+        if auth0_picture_url and auth0_picture_url != str(existing.get("auth0_picture_url") or ""):
+            updates["auth0_picture_url"] = auth0_picture_url
+
+        if str(existing.get("auth_provider") or "").strip().lower() != "auth0":
+            updates["auth_provider"] = "auth0"
+
+        if updates:
+            await database.db.users.update_one({"_id": existing["_id"]}, {"$set": updates})
+            refreshed = await database.db.users.find_one({"_id": existing["_id"]})
+            return refreshed or existing
+
+        return existing
 
     if email:
         by_email = await database.db.users.find_one({"email": email})
@@ -229,20 +369,16 @@ async def _get_or_create_auth0_user(claims: Dict[str, Any]) -> Optional[Dict[str
                 print("Auth0 link blocked: email is not verified")
                 return None
 
-            name = _derive_name(
-                email,
-                _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name")),
-            )
-            await database.db.users.update_one(
-                {"_id": by_email["_id"]},
-                {
-                    "$set": {
-                        "auth0_sub": auth0_sub,
-                        "auth_provider": "auth0",
-                        "name": by_email.get("name") or name,
-                    }
-                },
-            )
+            updates = {
+                "auth0_sub": auth0_sub,
+                "auth_provider": "auth0",
+            }
+            if _is_placeholder_name(by_email.get("name")):
+                updates["name"] = resolved_name
+            if auth0_picture_url:
+                updates["auth0_picture_url"] = auth0_picture_url
+
+            await database.db.users.update_one({"_id": by_email["_id"]}, {"$set": updates})
             refreshed = await database.db.users.find_one({"_id": by_email["_id"]})
             return refreshed or by_email
 
@@ -254,17 +390,13 @@ async def _get_or_create_auth0_user(claims: Dict[str, Any]) -> Optional[Dict[str
         safe_sub = auth0_sub.replace("|", ".").replace(" ", "")
         email = f"{safe_sub}@auth0.local"
 
-    name = _derive_name(
-        email,
-        _first_non_empty(claims.get("name"), claims.get("nickname"), claims.get("given_name")),
-    )
-
     user_doc = {
         "user_id": str(uuid.uuid4()),
         "email": email,
-        "name": name,
+        "name": resolved_name,
         "auth_provider": "auth0",
         "auth0_sub": auth0_sub,
+        "auth0_picture_url": auth0_picture_url,
         "created_at": datetime.utcnow(),
     }
     await database.db.users.insert_one(user_doc)
@@ -367,6 +499,11 @@ class PasswordResetRequest(BaseModel):
     email: EmailStr
 
 
+class AccountProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
 @router.post("/signup")
 async def signup(user: UserCreate, request: Request):
     _ensure_auth_rate_limit("signup", request, AUTH_SIGNUP_RATE_LIMIT)
@@ -421,7 +558,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         if not claims:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        user = await _get_or_create_auth0_user(claims)
+        user = await _get_or_create_auth0_user(claims, access_token=token)
         if not user:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -478,15 +615,14 @@ async def me(user=Depends(get_current_user)):
             "name": user.get("name", ""),
             "user_id": user.get("user_id", ""),
             "auth_provider": user.get("auth_provider", "email"),
+            "avatar_url": _effective_avatar_url(user),
         }
     raise HTTPException(status_code=401)
 
 
-@router.get("/account")
-async def account(user=Depends(get_current_user)):
+def _build_account_payload(user: Dict[str, Any]) -> Dict[str, Any]:
     provider = _auth_provider_label(user)
     can_reset_password = _is_database_auth0_user(user)
-
     return {
         "email": user.get("email", ""),
         "name": user.get("name", ""),
@@ -494,10 +630,50 @@ async def account(user=Depends(get_current_user)):
         "auth_provider": user.get("auth_provider", "email"),
         "provider": provider,
         "auth0_sub": user.get("auth0_sub", ""),
+        "avatar_url": _effective_avatar_url(user),
+        "custom_avatar_url": _first_non_empty(user.get("avatar_url")),
+        "auth0_picture_url": _first_non_empty(user.get("auth0_picture_url")),
         "can_reset_password": can_reset_password,
         "management_delete_configured": _auth0_mgmt_enabled(),
         "account_delete_enabled": ACCOUNT_DELETE_ENABLED,
     }
+
+
+@router.get("/account")
+async def account(user=Depends(get_current_user)):
+    return _build_account_payload(user)
+
+
+@router.patch("/account/profile")
+async def update_account_profile(payload: AccountProfileUpdate, user=Depends(get_current_user)):
+    user_id = str(user.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Invalid account state")
+
+    updates: Dict[str, Any] = {}
+
+    if payload.name is not None:
+        normalized_name = _sanitize_profile_name(payload.name)
+        if not normalized_name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        updates["name"] = normalized_name
+
+    if payload.avatar_url is not None:
+        raw_avatar = str(payload.avatar_url or "").strip()
+        normalized_avatar_url = _sanitize_avatar_url(raw_avatar)
+        if raw_avatar and not normalized_avatar_url:
+            raise HTTPException(status_code=400, detail="Avatar URL must be a valid http(s) URL")
+        updates["avatar_url"] = normalized_avatar_url
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No profile changes provided")
+
+    await database.db.users.update_one({"user_id": user_id}, {"$set": updates})
+    refreshed = await database.db.users.find_one({"user_id": user_id})
+    if not refreshed:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return _build_account_payload(refreshed)
 
 
 @router.delete("/account")
