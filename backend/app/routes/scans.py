@@ -192,6 +192,21 @@ async def list_results(id: str, user=Depends(get_current_user)):
     return results
 
 
+@router.get("/{id}/results/{result_id}/detail", response_model=ScanResultDetailOut)
+async def result_detail(id: str, result_id: str, user=Depends(get_current_user)):
+    game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    query = _scan_filter_for_user_game(id, user["user_id"])
+    query["_id"] = result_id
+    r = await database.db.scan_results.find_one(query)
+    if not r:
+        raise HTTPException(status_code=404, detail="Scan result not found")
+
+    return _scan_detail_out_from_doc(r)
+
+
 @router.get("/{id}/latest-result", response_model=ScanResultOut)
 async def latest_result(id: str, user=Depends(get_current_user)):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})

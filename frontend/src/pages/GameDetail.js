@@ -446,6 +446,9 @@ const GameDetail = () => {
   const [game, setGame] = useState(null);
   const [latest, setLatest] = useState(null);
   const [latestDetail, setLatestDetail] = useState(null);
+  const [activeResultId, setActiveResultId] = useState('');
+  const [activeResultDetail, setActiveResultDetail] = useState(null);
+  const [historyLoadingResultId, setHistoryLoadingResultId] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -484,6 +487,7 @@ const GameDetail = () => {
       setLatest(sorted[0] || null);
 
       if (sorted.length === 0) {
+        clearHistorySelection();
         setLatestDetail(null);
       } else {
         try {
@@ -525,6 +529,39 @@ const GameDetail = () => {
     });
   }, [game?.subreddit]);
 
+  const clearHistorySelection = () => {
+    setActiveResultId('');
+    setActiveResultDetail(null);
+    setHistoryLoadingResultId('');
+  };
+
+  const viewHistoryResult = async (resultId) => {
+    const normalizedId = String(resultId || '').trim();
+    if (!normalizedId) return;
+
+    if (normalizedId === String(latest?.id || '')) {
+      clearHistorySelection();
+      return;
+    }
+
+    setPageError('');
+    setActiveResultId(normalizedId);
+    setActiveResultDetail(null);
+    setHistoryLoadingResultId(normalizedId);
+
+    try {
+      const resp = await api.get(`/api/games/${id}/results/${normalizedId}/detail`);
+      setActiveResultDetail(resp?.data || null);
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      setPageError(typeof detail === 'string' ? detail : 'Failed to load selected scan details.');
+      setActiveResultId('');
+      setActiveResultDetail(null);
+    } finally {
+      setHistoryLoadingResultId('');
+    }
+  };
+
   const runScan = async () => {
     const startedAtMs = Date.now();
     setScanStartedAtMs(startedAtMs);
@@ -533,6 +570,7 @@ const GameDetail = () => {
 
     try {
       await api.post(`/api/games/${id}/scan`);
+      clearHistorySelection();
       await loadPage();
     } catch (err) {
       const detail = err?.response?.data?.detail;
@@ -687,9 +725,17 @@ const GameDetail = () => {
     }
   };
 
-  const analysis = latestDetail?.analysis || latest?.analysis || {};
-  const latestPosts = toArray(latestDetail?.posts);
-  const latestComments = toArray(latestDetail?.comments);
+  const selectedHistoryResult = useMemo(
+    () => results.find((result) => String(result?.id || '') === String(activeResultId || '')) || null,
+    [results, activeResultId]
+  );
+  const displayedResult = selectedHistoryResult || latest;
+  const displayedDetail = selectedHistoryResult ? activeResultDetail : latestDetail;
+  const viewingHistoricalScan = Boolean(selectedHistoryResult);
+
+  const analysis = displayedDetail?.analysis || displayedResult?.analysis || {};
+  const latestPosts = toArray(displayedDetail?.posts);
+  const latestComments = toArray(displayedDetail?.comments);
 
   const sourcePostsById = useMemo(() => buildPostLookup(latestPosts), [latestPosts]);
 
@@ -720,9 +766,9 @@ const GameDetail = () => {
     });
   }, [results]);
 
-  const lastScanned = latestDetail?.created_at || latest?.created_at;
-  const postsAnalyzed = latestPosts.length || Number(latest?.posts_count || 0);
-  const commentsAnalyzed = latestComments.length || Number(latest?.comments_count || 0);
+  const lastScanned = displayedDetail?.created_at || displayedResult?.created_at;
+  const postsAnalyzed = latestPosts.length || Number(displayedResult?.posts_count || 0);
+  const commentsAnalyzed = latestComments.length || Number(displayedResult?.comments_count || 0);
 
   const postsLast7Days = useMemo(() => {
     const now = Date.now();
@@ -1225,7 +1271,7 @@ const GameDetail = () => {
           </div>
 
           {sourcePosts.length === 0 ? (
-            <p className="text-zinc-400">No source posts available for the latest scan.</p>
+            <p className="text-zinc-400">{viewingHistoricalScan ? 'No source posts available for the selected historical scan.' : 'No source posts available for the latest scan.'}</p>
           ) : (
             <div className="border border-white/10">
               {sourcePosts.map((post) => {
@@ -1274,25 +1320,62 @@ const GameDetail = () => {
           {history.length === 0 ? (
             <p className="text-zinc-400">No historical scans yet.</p>
           ) : (
-            <div className="border border-white/10">
-              {history.map((item) => (
-                <article key={item.id} className="border-b border-white/10 last:border-b-0 px-5 py-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center flex-wrap gap-x-4 gap-y-1">
-                      <span className="font-mono text-zinc-500">{formatDate(item.createdAt)}</span>
-                      <span className={`text-xl font-heading ${sentimentStyles(item.label)} border px-2 py-0.5`}>
-                        {item.label}
-                      </span>
-                      <span className="font-mono text-zinc-500">
-                        {item.postsCount} posts  {item.commentsCount} comments
-                      </span>
-                    </div>
-                    <span className="text-zinc-500">></span>
-                  </div>
-                  {item.summary ? <p className="text-sm text-zinc-400 mt-2">{item.summary}</p> : null}
-                </article>
-              ))}
-            </div>
+            <>
+              <div className="mb-4 flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-sm text-zinc-400">
+                  {viewingHistoricalScan
+                    ? `Viewing historical scan: ${formatShortTime(displayedDetail?.created_at || displayedResult?.created_at)}`
+                    : 'Viewing latest scan'}
+                </p>
+                {viewingHistoricalScan ? (
+                  <button
+                    type="button"
+                    onClick={clearHistorySelection}
+                    className="px-3 py-1.5 border border-white/15 text-xs text-zinc-300 hover:text-white hover:border-white/30"
+                  >
+                    View Latest Scan
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="border border-white/10">
+                {history.map((item) => {
+                  const isLatestRow = String(item?.id || '') === String(latest?.id || '');
+                  const isSelectedRow = viewingHistoricalScan
+                    ? String(item?.id || '') === String(activeResultId || '')
+                    : isLatestRow;
+                  const isLoadingRow = String(historyLoadingResultId || '') === String(item?.id || '');
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => viewHistoryResult(item.id)}
+                      disabled={isLoadingRow}
+                      className={`w-full text-left border-b border-white/10 last:border-b-0 px-5 py-4 transition-colors ${
+                        isSelectedRow ? 'bg-white/5' : 'hover:bg-white/[0.02]'
+                      } disabled:opacity-70`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center flex-wrap gap-x-4 gap-y-1">
+                          <span className="font-mono text-zinc-500">{formatDate(item.createdAt)}</span>
+                          <span className={`text-xl font-heading ${sentimentStyles(item.label)} border px-2 py-0.5`}>
+                            {item.label}
+                          </span>
+                          <span className="font-mono text-zinc-500">
+                            {item.postsCount} posts  {item.commentsCount} comments
+                          </span>
+                        </div>
+                        <span className="text-zinc-500">
+                          {isLoadingRow ? '...' : isSelectedRow ? 'Viewing' : 'View >'}
+                        </span>
+                      </div>
+                      {item.summary ? <p className="text-sm text-zinc-400 mt-2">{item.summary}</p> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           )}
         </section>
       </main>
@@ -1301,5 +1384,3 @@ const GameDetail = () => {
 };
 
 export default GameDetail;
-
-
