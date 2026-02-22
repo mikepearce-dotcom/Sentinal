@@ -58,6 +58,7 @@ class ScanResultOut(BaseModel):
     analysis: dict
     posts_count: int = 0
     comments_count: int = 0
+    scan_type: Optional[str] = None
 
 
 class ScanResultDetailOut(BaseModel):
@@ -66,6 +67,9 @@ class ScanResultDetailOut(BaseModel):
     analysis: dict
     posts: List[dict]
     comments: List[dict]
+    scan_type: Optional[str] = None
+    subreddit_breakdown: Optional[dict] = None
+    meta: Optional[dict] = None
 
 
 class Token(BaseModel):

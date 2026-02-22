@@ -70,6 +70,30 @@ const MULTI_SCAN_STAGES = [
 
 
 const toArray = (value) => (Array.isArray(value) ? value : []);
+const toObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
+
+const toStoredMultiScanResult = (result, detail) => {
+  const detailObj = toObject(detail);
+  const resultObj = toObject(result);
+  const breakdown = toObject(detailObj.subreddit_breakdown);
+  const meta = toObject(detailObj.meta);
+  const detailScanType = String(detailObj.scan_type || '').toLowerCase();
+  const resultScanType = String(resultObj.scan_type || '').toLowerCase();
+  const isMulti = (
+    detailScanType === 'multi'
+    || resultScanType === 'multi'
+    || Array.isArray(breakdown.breakdown)
+    || Object.keys(breakdown).length > 0
+  );
+
+  if (!isMulti) return null;
+
+  return {
+    overall: toObject(detailObj.analysis || resultObj.analysis),
+    meta,
+    subreddit_breakdown: Object.keys(breakdown).length > 0 ? breakdown : { breakdown: [] },
+  };
+};
 
 const normalizeListEntry = (entry) => {
   if (entry == null) return '';
@@ -567,6 +591,7 @@ const GameDetail = () => {
     setScanStartedAtMs(startedAtMs);
     setScanning(true);
     setPageError('');
+    setMultiScanResult(null);
 
     try {
       await api.post(`/api/games/${id}/scan`);
@@ -792,9 +817,17 @@ const GameDetail = () => {
     return ranked.slice(0, 12);
   }, [latestPosts]);
 
-  const multiOverall = multiScanResult?.overall || {};
-  const multiMeta = multiScanResult?.meta || {};
-  const multiBreakdownRows = toArray(multiScanResult?.subreddit_breakdown?.breakdown);
+  const persistedDisplayedMultiScanResult = useMemo(
+    () => toStoredMultiScanResult(displayedResult, displayedDetail),
+    [displayedResult, displayedDetail]
+  );
+  const effectiveMultiScanResult = viewingHistoricalScan
+    ? persistedDisplayedMultiScanResult
+    : (persistedDisplayedMultiScanResult || multiScanResult);
+
+  const multiOverall = effectiveMultiScanResult?.overall || {};
+  const multiMeta = effectiveMultiScanResult?.meta || {};
+  const multiBreakdownRows = toArray(effectiveMultiScanResult?.subreddit_breakdown?.breakdown);
 
   const multiOverallThemes = useMemo(
     () => normalizeInsightEntries(multiOverall?.themes, {}),
@@ -1022,7 +1055,7 @@ const GameDetail = () => {
           {multiScanError ? <p className="text-sm text-amber-300 mt-3">{multiScanError}</p> : null}
         </section>
 
-        {multiScanResult ? (
+        {effectiveMultiScanResult ? (
           <>
             <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
               <MetricCard label="Combined Posts" value={Number(multiMeta?.posts_analysed || 0)} />
@@ -1082,7 +1115,7 @@ const GameDetail = () => {
                 <span className="font-mono text-sm text-zinc-500">{multiBreakdownRows.length} communities</span>
               </div>
 
-              {multiScanResult?.subreddit_breakdown?.error ? (
+              {effectiveMultiScanResult?.subreddit_breakdown?.error ? (
                 <p className="text-sm text-amber-300 mb-4">
                   Using deterministic subreddit breakdown fallback while AI formatting is unavailable.
                 </p>
@@ -1198,7 +1231,7 @@ const GameDetail = () => {
           </>
         ) : null}
 
-        {multiScanResult ? null : (
+        {effectiveMultiScanResult ? null : (
           <>
             <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           <MetricCard label="Posts Analysed" value={postsAnalyzed} />

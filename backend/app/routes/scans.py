@@ -57,6 +57,7 @@ def _scan_out_from_doc(doc: Dict[str, Any]) -> ScanResultOut:
         analysis=doc.get("analysis") or {},
         posts_count=len(posts),
         comments_count=len(comments),
+        scan_type=(str(doc.get("scan_type") or "").strip() or None),
     )
 
 
@@ -67,6 +68,11 @@ def _scan_detail_out_from_doc(doc: Dict[str, Any]) -> ScanResultDetailOut:
         analysis=doc.get("analysis") or {},
         posts=_safe_list(doc.get("posts")),
         comments=_safe_list(doc.get("comments")),
+        scan_type=(str(doc.get("scan_type") or "").strip() or None),
+        subreddit_breakdown=(
+            doc.get("subreddit_breakdown") if isinstance(doc.get("subreddit_breakdown"), dict) else None
+        ),
+        meta=(doc.get("meta") if isinstance(doc.get("meta"), dict) else None),
     )
 
 
@@ -173,6 +179,7 @@ async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
         "posts": posts,
         "comments": comments,
         "analysis": analysis,
+        "scan_type": "single",
     }
 
     await database.db.scan_results.insert_one(result)
