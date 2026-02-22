@@ -377,14 +377,45 @@ const InsightColumn = ({ title, icon, entries, sourcePosts, postsById, tone = 'n
   );
 };
 
-const SentimentTrend = ({ history }) => {
+const SentimentTrend = ({
+  history,
+  windowValue = '30d',
+  onWindowChange,
+  loading = false,
+  error = '',
+  summary = {},
+}) => {
+  const counts = toObject(summary?.sentiment_counts);
+  const latestVsPrevious = toObject(summary?.latest_vs_previous);
+  const windowOptions = ['7d', '30d', '90d'];
+
   if (history.length === 0) {
     return (
       <section className="card-glass p-6">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <h2 className="font-heading text-4xl font-black">Sentiment Trend</h2>
-          <span className="font-mono text-sm text-zinc-500">0 scans</span>
+          <div className="flex items-center gap-2">
+            {windowOptions.map((option) => (
+              <button
+                key={`trend-window-empty-${option}`}
+                type="button"
+                onClick={() => onWindowChange?.(option)}
+                className={`px-2.5 py-1 border text-xs font-mono ${
+                  windowValue === option
+                    ? 'border-[#D3F34B]/40 bg-[#D3F34B]/10 text-[#e7ff8b]'
+                    : 'border-white/10 text-zinc-400 hover:text-white hover:border-white/25'
+                }`}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
         </div>
+        <div className="flex items-center justify-between mb-3">
+          <span className="font-mono text-sm text-zinc-500">0 scans in {windowValue}</span>
+          {loading ? <span className="text-xs text-zinc-500">Loading trend data...</span> : null}
+        </div>
+        {error ? <p className="text-sm text-amber-300 mb-2">{error}</p> : null}
         <p className="text-zinc-400">Run more scans to build a trendline.</p>
       </section>
     );
@@ -419,9 +450,45 @@ const SentimentTrend = ({ history }) => {
 
   return (
     <section className="card-glass p-6">
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h2 className="font-heading text-4xl font-black">Sentiment Trend</h2>
-        <span className="font-mono text-sm text-zinc-500">{history.length} scans</span>
+        <div className="flex items-center gap-2">
+          {windowOptions.map((option) => (
+            <button
+              key={`trend-window-${option}`}
+              type="button"
+              onClick={() => onWindowChange?.(option)}
+              disabled={loading && windowValue === option}
+              className={`px-2.5 py-1 border text-xs font-mono transition-colors ${
+                windowValue === option
+                  ? 'border-[#D3F34B]/40 bg-[#D3F34B]/10 text-[#e7ff8b]'
+                  : 'border-white/10 text-zinc-400 hover:text-white hover:border-white/25'
+              } disabled:opacity-70`}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="border border-white/10 bg-black/20 p-4 mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+            <span className="font-mono text-zinc-500">{history.length} scans in {windowValue}</span>
+            <span className="text-[#7CFF9A]">POS {Number(counts?.Positive || 0)}</span>
+            <span className="text-[#FCEE0A]">MIX {Number(counts?.Mixed || 0)}</span>
+            <span className="text-[#FF4569]">NEG {Number(counts?.Negative || 0)}</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            {loading ? <span className="text-zinc-500">Refreshing...</span> : null}
+            {latestVsPrevious?.to_result_id ? (
+              <span className="font-mono text-zinc-400 border border-white/10 px-2 py-1">
+                Latest vs prev: {String(latestVsPrevious?.direction || 'unchanged')} ({formatSignedNumber(latestVsPrevious?.posts_delta)} posts)
+              </span>
+            ) : null}
+          </div>
+        </div>
+        {error ? <p className="text-sm text-amber-300 mt-3">{error}</p> : null}
       </div>
 
       <div className="overflow-x-auto">
@@ -462,6 +529,184 @@ const SentimentTrend = ({ history }) => {
   );
 };
 
+const formatSignedNumber = (value) => {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return '0';
+  return num > 0 ? `+${num}` : String(num);
+};
+
+const compareDeltaTone = (value, { inverted = false } = {}) => {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num === 0) return 'text-zinc-300';
+  if (inverted) return num > 0 ? 'text-[#FF4569]' : 'text-[#7CFF9A]';
+  return num > 0 ? 'text-[#7CFF9A]' : 'text-[#FF4569]';
+};
+
+const ScanChangePanel = ({ compareData, loading, error }) => {
+  if (!loading && !error && !compareData) return null;
+
+  const summary = toObject(compareData?.summary);
+  const fromResult = toObject(compareData?.from_result);
+  const toResult = toObject(compareData?.to_result);
+  const themeChanges = toObject(compareData?.theme_changes);
+  const painChanges = toObject(compareData?.pain_point_changes);
+  const winChanges = toObject(compareData?.win_changes);
+  const subredditChanges = toArray(compareData?.subreddit_sentiment_changes);
+
+  return (
+    <section className="card-glass p-6">
+      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+        <h2 className="font-heading text-4xl font-black">What Changed Since Previous Scan</h2>
+        {compareData ? (
+          <span className="font-mono text-xs text-zinc-500">
+            {formatShortTime(fromResult?.created_at)} -> {formatShortTime(toResult?.created_at)}
+          </span>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <p className="text-zinc-400">Comparing latest scan against previous result...</p>
+      ) : error ? (
+        <p className="text-sm text-amber-300">{error}</p>
+      ) : !compareData ? (
+        <p className="text-zinc-400">Run at least two scans to see what changed.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3 mb-5">
+            <article className="border border-white/10 bg-black/20 p-3">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">Sentiment Shift</p>
+              <p className={`mt-2 text-lg font-semibold ${compareDeltaTone(compareData?.sentiment_score_delta)}`}>
+                {String(compareData?.sentiment_from || 'Unknown')} -> {String(compareData?.sentiment_to || 'Unknown')}
+              </p>
+              <p className="text-xs text-zinc-500 mt-1">{String(summary?.direction || 'unchanged')}</p>
+            </article>
+            <article className="border border-white/10 bg-black/20 p-3">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">Posts Delta</p>
+              <p className={`mt-2 text-2xl font-heading font-black ${compareDeltaTone(compareData?.posts_delta)}`}>
+                {formatSignedNumber(compareData?.posts_delta)}
+              </p>
+            </article>
+            <article className="border border-white/10 bg-black/20 p-3">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">Comments Delta</p>
+              <p className={`mt-2 text-2xl font-heading font-black ${compareDeltaTone(compareData?.comments_delta)}`}>
+                {formatSignedNumber(compareData?.comments_delta)}
+              </p>
+            </article>
+            <article className="border border-white/10 bg-black/20 p-3">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">New Themes</p>
+              <p className="mt-2 text-2xl font-heading font-black text-[#8BE8FF]">{Number(summary?.theme_new_count || 0)}</p>
+            </article>
+            <article className="border border-white/10 bg-black/20 p-3">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">New Pain Points</p>
+              <p className={`mt-2 text-2xl font-heading font-black ${compareDeltaTone(summary?.pain_new_count, { inverted: true })}`}>
+                {Number(summary?.pain_new_count || 0)}
+              </p>
+            </article>
+            <article className="border border-white/10 bg-black/20 p-3">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">Days Between</p>
+              <p className="mt-2 text-2xl font-heading font-black text-zinc-200">{Number(summary?.days_between || 0)}</p>
+            </article>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+            <div className="border border-white/10 bg-black/20 p-4">
+              <h3 className="font-heading text-xl font-bold text-[#8BE8FF] mb-3">Theme Changes</h3>
+              {Number(themeChanges?.new_count || 0) === 0 && Number(themeChanges?.removed_count || 0) === 0 ? (
+                <p className="text-sm text-zinc-500">No major theme movement detected.</p>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  {toArray(themeChanges?.new).length > 0 ? (
+                    <div>
+                      <p className="text-[#7CFF9A] font-semibold mb-1">New / Rising</p>
+                      <ul className="space-y-1 text-zinc-200">
+                        {toArray(themeChanges.new).slice(0, 3).map((item, idx) => (
+                          <li key={`theme-new-${idx}`}>{normalizeListEntry(item)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {toArray(themeChanges?.removed).length > 0 ? (
+                    <div>
+                      <p className="text-[#FF4569] font-semibold mb-1">Dropped / Lower Visibility</p>
+                      <ul className="space-y-1 text-zinc-300">
+                        {toArray(themeChanges.removed).slice(0, 3).map((item, idx) => (
+                          <li key={`theme-removed-${idx}`}>{normalizeListEntry(item)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div className="border border-white/10 bg-black/20 p-4">
+              <h3 className="font-heading text-xl font-bold text-[#FF4569] mb-3">Pain Point Movement</h3>
+              {Number(painChanges?.new_count || 0) === 0 && Number(painChanges?.removed_count || 0) === 0 ? (
+                <p className="text-sm text-zinc-500">No significant pain-point movement detected.</p>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  {toArray(painChanges?.new).length > 0 ? (
+                    <div>
+                      <p className="text-[#FF4569] font-semibold mb-1">New / Worsening Signals</p>
+                      <ul className="space-y-1 text-zinc-200">
+                        {toArray(painChanges.new).slice(0, 3).map((item, idx) => (
+                          <li key={`pain-new-${idx}`}>{normalizeListEntry(item)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {toArray(painChanges?.removed).length > 0 ? (
+                    <div>
+                      <p className="text-[#7CFF9A] font-semibold mb-1">Reduced / Resolved Visibility</p>
+                      <ul className="space-y-1 text-zinc-300">
+                        {toArray(painChanges.removed).slice(0, 3).map((item, idx) => (
+                          <li key={`pain-removed-${idx}`}>{normalizeListEntry(item)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div className="border border-white/10 bg-black/20 p-4">
+              <h3 className="font-heading text-xl font-bold text-[#7CFF9A] mb-3">Wins + Community Shift</h3>
+              {toArray(winChanges?.new).length === 0 && subredditChanges.length === 0 ? (
+                <p className="text-sm text-zinc-500">No major positive or community-level shifts detected.</p>
+              ) : (
+                <div className="space-y-3 text-sm">
+                  {toArray(winChanges?.new).length > 0 ? (
+                    <div>
+                      <p className="text-[#7CFF9A] font-semibold mb-1">New / Stronger Wins</p>
+                      <ul className="space-y-1 text-zinc-200">
+                        {toArray(winChanges.new).slice(0, 3).map((item, idx) => (
+                          <li key={`win-new-${idx}`}>{normalizeListEntry(item)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {subredditChanges.length > 0 ? (
+                    <div>
+                      <p className="text-zinc-300 font-semibold mb-1">Subreddit Sentiment Changes</p>
+                      <ul className="space-y-1 text-zinc-300">
+                        {subredditChanges.slice(0, 4).map((row, idx) => (
+                          <li key={`sub-change-${row?.subreddit || idx}`}>
+                            r/{row?.subreddit || 'unknown'}: {String(row?.from_sentiment || 'Unknown')} -> {String(row?.to_sentiment || 'Unknown')}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+};
+
 const GameDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -473,6 +718,13 @@ const GameDetail = () => {
   const [activeResultId, setActiveResultId] = useState('');
   const [activeResultDetail, setActiveResultDetail] = useState(null);
   const [historyLoadingResultId, setHistoryLoadingResultId] = useState('');
+  const [compareData, setCompareData] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState('');
+  const [trendWindow, setTrendWindow] = useState('30d');
+  const [trendData, setTrendData] = useState(null);
+  const [trendLoading, setTrendLoading] = useState(false);
+  const [trendError, setTrendError] = useState('');
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -806,6 +1058,98 @@ const GameDetail = () => {
       return sum + item.postsCount;
     }, 0);
   }, [history]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const targetId = String(displayedResult?.id || '').trim();
+
+    if (!id || !targetId || results.length < 2) {
+      setCompareData(null);
+      setCompareError('');
+      setCompareLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setCompareLoading(true);
+    setCompareError('');
+
+    api
+      .get(`/api/games/${id}/results/compare`, { params: { to_result_id: targetId } })
+      .then((resp) => {
+        if (cancelled) return;
+        setCompareData(resp?.data || null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err?.response?.status === 404) {
+          setCompareData(null);
+          setCompareError('');
+          return;
+        }
+        const detail = err?.response?.data?.detail;
+        setCompareData(null);
+        setCompareError(typeof detail === 'string' ? detail : 'Failed to compare scans.');
+      })
+      .finally(() => {
+        if (!cancelled) setCompareLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, displayedResult?.id, results.length]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!id) {
+      setTrendData(null);
+      setTrendError('');
+      setTrendLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setTrendLoading(true);
+    setTrendError('');
+
+    api
+      .get(`/api/games/${id}/results/trends`, { params: { window: trendWindow } })
+      .then((resp) => {
+        if (cancelled) return;
+        setTrendData(resp?.data || null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const detail = err?.response?.data?.detail;
+        setTrendData(null);
+        setTrendError(typeof detail === 'string' ? detail : 'Failed to load trend data.');
+      })
+      .finally(() => {
+        if (!cancelled) setTrendLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id, trendWindow, results.length, latest?.id]);
+
+  const trendHistory = useMemo(() => {
+    const points = Array.isArray(trendData?.points) ? trendData.points : null;
+    if (!points) return history;
+
+    return points.map((point) => ({
+      id: point?.id,
+      createdAt: point?.created_at,
+      label: point?.sentiment_label || 'Unknown',
+      summary: '',
+      postsCount: Number(point?.posts_count || 0),
+      commentsCount: Number(point?.comments_count || 0),
+    }));
+  }, [trendData, history]);
 
   const sourcePosts = useMemo(() => {
     const ranked = [...latestPosts];
@@ -1297,6 +1641,12 @@ const GameDetail = () => {
           </>
         )}
 
+        <ScanChangePanel
+          compareData={compareData}
+          loading={compareLoading}
+          error={compareError}
+        />
+
         <section className="card-glass p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-heading text-4xl font-black">Source Posts</h2>
@@ -1342,7 +1692,18 @@ const GameDetail = () => {
           )}
         </section>
 
-        <SentimentTrend history={history} />
+        <SentimentTrend
+          history={trendHistory}
+          windowValue={String(trendData?.window || trendWindow || '30d')}
+          onWindowChange={(nextWindow) => {
+            const value = String(nextWindow || '').trim();
+            if (!value || value === trendWindow) return;
+            setTrendWindow(value);
+          }}
+          loading={trendLoading}
+          error={trendError}
+          summary={toObject(trendData?.summary)}
+        />
 
         <section className="card-glass p-6">
           <div className="flex items-center justify-between mb-4">

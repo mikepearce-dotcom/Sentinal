@@ -1,6 +1,6 @@
 from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class UserBase(BaseModel):
@@ -70,6 +70,38 @@ class ScanResultDetailOut(BaseModel):
     scan_type: Optional[str] = None
     subreddit_breakdown: Optional[dict] = None
     meta: Optional[dict] = None
+
+
+class ScanCompareOut(BaseModel):
+    from_result: ScanResultOut
+    to_result: ScanResultOut
+    sentiment_from: str = "Unknown"
+    sentiment_to: str = "Unknown"
+    sentiment_score_delta: int = 0
+    posts_delta: int = 0
+    comments_delta: int = 0
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    theme_changes: Dict[str, Any] = Field(default_factory=dict)
+    pain_point_changes: Dict[str, Any] = Field(default_factory=dict)
+    win_changes: Dict[str, Any] = Field(default_factory=dict)
+    subreddit_sentiment_changes: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ScanTrendPointOut(BaseModel):
+    id: str
+    created_at: datetime
+    sentiment_label: str = "Unknown"
+    sentiment_score: int = 0
+    posts_count: int = 0
+    comments_count: int = 0
+    scan_type: Optional[str] = None
+
+
+class ScanTrendsOut(BaseModel):
+    window: str = "30d"
+    scan_count: int = 0
+    points: List[ScanTrendPointOut] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
 
 
 class Token(BaseModel):
