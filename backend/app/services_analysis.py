@@ -232,6 +232,20 @@ def _summary_post_ref_count(text: str) -> int:
     post_ids = _extract_post_ids(str(text or ""))
     return len(set(post_ids))
 
+def _summary_sentence_count(text: str) -> int:
+    value = str(text or "").strip()
+    if not value:
+        return 0
+    return len([part for part in re.split(r"(?<=[.!?])\s+", value) if str(part).strip()])
+
+def _should_refine_executive_summary(summary_text: str, posts: List[Dict[str, Any]]) -> bool:
+    if len(posts or []) < 8:
+        return False
+    words = _summary_word_count(summary_text)
+    refs = _summary_post_ref_count(summary_text)
+    sentences = _summary_sentence_count(summary_text)
+    return words < 120 or refs < 3 or sentences < 5
+
 def _ensure_detailed_sentiment_summary(primary_summary: str, fallback_summary: str) -> str:
     primary = str(primary_summary or "").strip()
     fallback = str(fallback_summary or "").strip()
@@ -508,6 +522,178 @@ def ensure_valid_analysis_schema(
     }
 
 
+def _build_executive_summary_refinement_prompt(
+    posts: List[Dict[str, Any]],
+    comments: List[Dict[str, Any]],
+    analysis: Dict[str, Any],
+    game_name: str,
+    keywords: str,
+) -> str:
+    top_posts = sorted(posts or [], key=_calculate_post_rank, reverse=True)[:12]
+    top_comments = sorted(
+        comments or [],
+        key=lambda c: (
+            int(c.get("score", 0) or 0),
+            len(str(c.get("body", "") or "")),
+            float(c.get("created_utc", 0) or 0),
+        ),
+        reverse=True,
+    )[:12]
+
+    post_lines: List[str] = []
+    for post in top_posts:
+        post_id = str(post.get("id") or "").strip()
+        title = str(post.get("title", "") or "").strip()
+        score = int(post.get("score", 0) or 0)
+        num_comments = int(post.get("num_comments", 0) or 0)
+        post_lines.append(f"- [POST:{post_id}] [{score} pts, {num_comments} comments] {title}")
+        selftext = str(post.get("selftext", "") or "").replace("\n", " ").strip()
+        if selftext and selftext not in ("[removed]", "[deleted]"):
+            post_lines.append(f"  Snippet: {selftext[:220]}")
+
+    comment_lines: List[str] = []
+    for comment in top_comments:
+        source_post = str(comment.get("source_post_id") or "").strip()
+        score = int(comment.get("score", 0) or 0)
+        body = str(comment.get("body", "") or "").replace("\n", " ").strip()
+        if not body:
+            continue
+        comment_lines.append(f"- [POST:{source_post}] [{score} pts] {body[:220]}")
+
+    pain_texts = [
+        str(item.get("text", "") or "").strip()
+        for item in (analysis.get("pain_points") or [])
+        if isinstance(item, dict) and str(item.get("text", "") or "").strip()
+    ][:3]
+    win_texts = [
+        str(item.get("text", "") or "").strip()
+        for item in (analysis.get("wins") or [])
+        if isinstance(item, dict) and str(item.get("text", "") or "").strip()
+    ][:3]
+    themes = [str(t).strip() for t in (analysis.get("themes") or []) if str(t).strip()][:5]
+
+    keyword_note = f"\nKeywords to emphasize if supported by evidence: {keywords}" if keywords else ""
+    comments_block = "\n".join(comment_lines) if comment_lines else "(no comment samples available)"
+    posts_block = "\n".join(post_lines) if post_lines else "(no post samples available)"
+    themes_block = "\n".join([f"- {theme}" for theme in themes]) if themes else "(no themes available)"
+    pain_block = "\n".join([f"- {item}" for item in pain_texts]) if pain_texts else "(no pain points available)"
+    wins_block = "\n".join([f"- {item}" for item in win_texts]) if win_texts else "(no wins available)"
+
+    return f'''Rewrite ONLY the executive summary for a Reddit game feedback analysis.
+
+Game: {game_name or 'Unknown Game'}
+Current sentiment label: {analysis.get('sentiment_label', 'Mixed')}
+Current summary (too short or not detailed enough):
+{str(analysis.get('sentiment_summary', '') or '').strip()}
+
+Use the evidence below and keep the same factual meaning. Do not invent features, platforms, modes, or mechanics.
+{keyword_note}
+
+OUTPUT JSON ONLY:
+{{"sentiment_summary":"..."}}
+
+SUMMARY REQUIREMENTS:
+- 2 paragraphs preferred (1 paragraph only if evidence is genuinely sparse)
+- 8-12 sentences total
+- ~160-320 words target
+- Executive tone: diagnosis, evidence, implications, priorities
+- Paragraph 1: overall sentiment, what is driving it, confidence, and evidence breadth
+- Paragraph 2: top risks, strongest positives, and what product team should prioritize next
+- Include at least 4-6 [POST:post_id] references
+- Be specific and evidence-led (avoid generic wording)
+- Do not include markdown fences
+
+EXISTING THEMES:
+{themes_block}
+
+EXISTING PAIN POINTS:
+{pain_block}
+
+EXISTING WINS:
+{wins_block}
+
+TOP POSTS:
+{posts_block}
+
+TOP COMMENTS:
+{comments_block}
+'''
+
+
+async def _refine_executive_summary_with_ai(
+    posts: List[Dict[str, Any]],
+    comments: List[Dict[str, Any]],
+    analysis: Dict[str, Any],
+    game_name: str = "",
+    keywords: str = "",
+    force: bool = False,
+) -> Optional[str]:
+    current_summary = str(analysis.get("sentiment_summary", "") or "").strip()
+    if len(posts or []) < 8:
+        return None
+    if not force and not _should_refine_executive_summary(current_summary, posts):
+        return None
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        import openai
+
+        openai.api_key = api_key
+        prompt = _build_executive_summary_refinement_prompt(
+            posts=posts,
+            comments=comments,
+            analysis=analysis,
+            game_name=game_name,
+            keywords=keywords,
+        )
+
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You rewrite executive summaries for product insights. "
+                        "Return valid JSON only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.15,
+            max_tokens=550,
+        )
+
+        raw_text = response.choices[0].message.content or ""
+        parsed = _extract_json_payload(raw_text)
+        if not isinstance(parsed, dict):
+            return None
+
+        summary = str(parsed.get("sentiment_summary", "") or "").strip()
+        if not summary:
+            return None
+
+        current_quality = (
+            _summary_sentence_count(current_summary),
+            _summary_post_ref_count(current_summary),
+            _summary_word_count(current_summary),
+        )
+        candidate_quality = (
+            _summary_sentence_count(summary),
+            _summary_post_ref_count(summary),
+            _summary_word_count(summary),
+        )
+        if candidate_quality < current_quality:
+            return None
+
+        return summary
+    except Exception as exc:
+        print(f"Executive summary refinement failed: {exc}")
+        return None
+
+
 async def _repair_json_payload_with_ai(raw_text: str, schema_hint: str) -> Optional[Dict[str, Any]]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -550,6 +736,7 @@ async def analyze_posts_with_ai(
     comments: List[Dict[str, Any]],
     game_name: str = "",
     keywords: str = "",
+    refine_executive_summary: bool = True,
 ) -> Dict[str, Any]:
     """Analyze Reddit posts/comments with OpenAI and return normalized sentiment output."""
     api_key = os.getenv("OPENAI_API_KEY")
@@ -592,7 +779,24 @@ async def analyze_posts_with_ai(
             print("Overall analysis fallback used after parse/repair failure.")
             return ensure_valid_analysis_schema({}, posts, game_name=game_name)
 
-        return ensure_valid_analysis_schema(parsed, posts, game_name=game_name)
+        normalized = ensure_valid_analysis_schema(parsed, posts, game_name=game_name)
+        refined_summary: Optional[str] = None
+        if refine_executive_summary:
+            refined_summary = await _refine_executive_summary_with_ai(
+                posts=posts,
+                comments=comments,
+                analysis=normalized,
+                game_name=game_name,
+                keywords=keywords,
+                force=True,
+            )
+        if refined_summary:
+            normalized["sentiment_summary"] = _ensure_detailed_sentiment_summary(
+                refined_summary,
+                str(normalized.get("sentiment_summary", "") or "").strip(),
+            )
+
+        return normalized
     except Exception as exc:
         print(f"Overall analysis failed: {exc}")
         return ensure_valid_analysis_schema({}, posts, game_name=game_name)
@@ -608,7 +812,13 @@ async def analyze_subreddit_with_ai(
     scoped_subreddit = _normalize_subreddit(subreddit_name) or subreddit_name
     scoped_game_name = game_name or "Unknown Game"
     scoped_label = f"{scoped_game_name} - r/{scoped_subreddit}" if scoped_subreddit else scoped_game_name
-    return await analyze_posts_with_ai(posts, comments, game_name=scoped_label, keywords=keywords)
+    return await analyze_posts_with_ai(
+        posts,
+        comments,
+        game_name=scoped_label,
+        keywords=keywords,
+        refine_executive_summary=False,
+    )
 
 
 def _extract_post_ids(text: str) -> List[str]:
