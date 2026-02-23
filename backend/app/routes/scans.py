@@ -623,11 +623,25 @@ def _build_theme_signal_change_set(from_doc: Dict[str, Any], to_doc: Dict[str, A
             "stable": stable_count,
         },
         "from_signals": [
-            {"key": item.get("key"), "label": item.get("label"), "score": item.get("score"), "mention_count": item.get("mention_count")}
+            {
+                "key": item.get("key"),
+                "label": item.get("label"),
+                "score": item.get("score"),
+                "mention_count": item.get("mention_count"),
+                "evidence_post_ids": item.get("evidence_post_ids") or [],
+                "kind": item.get("kind") or "",
+            }
             for item in from_rows[:10]
         ],
         "to_signals": [
-            {"key": item.get("key"), "label": item.get("label"), "score": item.get("score"), "mention_count": item.get("mention_count")}
+            {
+                "key": item.get("key"),
+                "label": item.get("label"),
+                "score": item.get("score"),
+                "mention_count": item.get("mention_count"),
+                "evidence_post_ids": item.get("evidence_post_ids") or [],
+                "kind": item.get("kind") or "",
+            }
             for item in to_rows[:10]
         ],
     }

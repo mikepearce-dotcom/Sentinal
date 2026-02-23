@@ -559,6 +559,15 @@ const buildThemeTrackingRows = (themeChanges) => {
   const toSignals = toArray(themeChanges?.to_signals);
   const fromMap = new Map();
   const toMap = new Map();
+  const normalizePostIds = (value) => {
+    const ids = [];
+    toArray(value).forEach((raw) => {
+      const id = String(raw || '').trim();
+      if (!id || ids.includes(id)) return;
+      ids.push(id);
+    });
+    return ids;
+  };
 
   fromSignals.forEach((row) => {
     const key = String(row?.key || '').trim();
@@ -599,6 +608,7 @@ const buildThemeTrackingRows = (themeChanges) => {
     rows.push({
       key,
       label: String((toRow?.label || fromRow?.label || key) || key),
+      kind: String((toRow?.kind || fromRow?.kind || '') || ''),
       status,
       fromScore,
       toScore,
@@ -606,6 +616,8 @@ const buildThemeTrackingRows = (themeChanges) => {
       fromMentions,
       toMentions,
       mentionsDelta,
+      fromEvidencePostIds: normalizePostIds(fromRow?.evidence_post_ids).slice(0, 5),
+      toEvidencePostIds: normalizePostIds(toRow?.evidence_post_ids).slice(0, 5),
     });
   });
 
@@ -731,24 +743,102 @@ const ScanChangePanel = ({ compareData, loading, error }) => {
                   {themeTrackingRows.length === 0 ? (
                     <p className="text-sm text-zinc-500">No tracked theme movement detected.</p>
                   ) : (
-                    <div className="space-y-2">
-                      {themeTrackingRows.slice(0, 6).map((row) => (
-                        <div key={`theme-track-${row.key}`} className="border border-white/10 p-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-sm font-semibold text-zinc-100">{row.label}</p>
-                              <p className="text-[11px] text-zinc-500 mt-1">
-                                Signal {row.fromScore.toFixed(1)} -> {row.toScore.toFixed(1)} ({formatSignedNumber(row.scoreDelta)})
-                                {'  '}|{'  '}
-                                Mentions {row.fromMentions} -> {row.toMentions} ({formatSignedNumber(row.mentionsDelta)})
-                              </p>
-                            </div>
-                            <span className={`px-2 py-1 text-[11px] border uppercase tracking-[0.12em] ${themeMovementTone(row.status)}`}>
-                              {row.status}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
+                    <div>
+                      <p className="text-[11px] text-zinc-500 mb-2">
+                        Scroll to explore all tracked themes. Expand a row to open representative source threads.
+                      </p>
+                      <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+                        {themeTrackingRows.map((row) => {
+                          const currentLinks = toArray(row.toEvidencePostIds);
+                          const previousLinks = toArray(row.fromEvidencePostIds);
+                          const hasEvidence = currentLinks.length > 0 || previousLinks.length > 0;
+
+                          return (
+                            <details
+                              key={`theme-track-${row.key}`}
+                              className="border border-white/10 bg-black/10 p-3"
+                            >
+                              <summary className="list-none cursor-pointer">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-semibold text-zinc-100">{row.label}</p>
+                                    <p className="text-[11px] text-zinc-500 mt-1">
+                                      Signal {row.fromScore.toFixed(1)} -> {row.toScore.toFixed(1)} ({formatSignedNumber(row.scoreDelta)})
+                                      {'  '}|{'  '}
+                                      Mentions {row.fromMentions} -> {row.toMentions} ({formatSignedNumber(row.mentionsDelta)})
+                                    </p>
+                                    {row.kind ? (
+                                      <p className="text-[11px] text-zinc-500 mt-1 uppercase tracking-[0.12em]">
+                                        {row.kind.replace(/_/g, ' ')}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className={`px-2 py-1 text-[11px] border uppercase tracking-[0.12em] ${themeMovementTone(row.status)}`}>
+                                      {row.status}
+                                    </span>
+                                    <span className="text-[10px] text-zinc-500 uppercase tracking-[0.12em]">Expand</span>
+                                  </div>
+                                </div>
+                              </summary>
+
+                              <div className="mt-3 pt-3 border-t border-white/10 space-y-3">
+                                {!hasEvidence ? (
+                                  <p className="text-xs text-zinc-500">
+                                    No representative post links stored for this tracked theme yet.
+                                  </p>
+                                ) : null}
+
+                                {currentLinks.length > 0 ? (
+                                  <div>
+                                    <p className="text-[11px] text-[#8BE8FF] uppercase tracking-[0.14em] mb-1">
+                                      Current Scan Sources
+                                    </p>
+                                    <div className="flex flex-wrap gap-2">
+                                      {currentLinks.map((postId, linkIdx) => (
+                                        <a
+                                          key={`theme-track-current-${row.key}-${postId}-${linkIdx}`}
+                                          href={toPermalink(postId)}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-xs border border-[#8BE8FF]/20 bg-[#8BE8FF]/5 px-2 py-1 text-zinc-200 hover:text-white hover:border-[#8BE8FF]/40"
+                                        >
+                                          [POST:{postId}]
+                                        </a>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+
+                                {previousLinks.length > 0 ? (
+                                  <div>
+                                    <p className="text-[11px] text-zinc-400 uppercase tracking-[0.14em] mb-1">
+                                      Previous Scan Sources
+                                    </p>
+                                    <div className="flex flex-wrap gap-2">
+                                      {previousLinks.map((postId, linkIdx) => (
+                                        <a
+                                          key={`theme-track-prev-${row.key}-${postId}-${linkIdx}`}
+                                          href={toPermalink(postId)}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-xs border border-white/10 bg-white/[0.03] px-2 py-1 text-zinc-300 hover:text-white hover:border-white/20"
+                                        >
+                                          [POST:{postId}]
+                                        </a>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+
+                                <p className="text-[11px] text-zinc-500">
+                                  Theme tracking links point to representative posts. Comment-level evidence is currently rolled into source threads.
+                                </p>
+                              </div>
+                            </details>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                 </>
