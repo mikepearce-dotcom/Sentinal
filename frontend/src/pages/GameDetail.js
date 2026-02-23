@@ -1382,15 +1382,17 @@ const GameDetail = () => {
     }));
   }, [trendData, history]);
 
-  const sourcePosts = useMemo(() => {
+  const sortedSourcePosts = useMemo(() => {
     const ranked = [...latestPosts];
     ranked.sort((a, b) => {
       const scoreDiff = Number(b?.score || 0) - Number(a?.score || 0);
       if (scoreDiff !== 0) return scoreDiff;
       return Number(b?.created_utc || 0) - Number(a?.created_utc || 0);
     });
-    return ranked.slice(0, 12);
+    return ranked;
   }, [latestPosts]);
+
+  const sourcePosts = useMemo(() => sortedSourcePosts.slice(0, 12), [sortedSourcePosts]);
 
   const persistedDisplayedMultiScanResult = useMemo(
     () => toStoredMultiScanResult(displayedResult, displayedDetail),
@@ -1881,25 +1883,36 @@ const GameDetail = () => {
         <section className="card-glass p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-heading text-4xl font-black">Source Posts</h2>
-            <span className="font-mono text-sm text-zinc-500">{latestPosts.length} posts</span>
+            <span className="font-mono text-sm text-zinc-500">{sortedSourcePosts.length} posts</span>
           </div>
 
-          {sourcePosts.length === 0 ? (
+          {sortedSourcePosts.length === 0 ? (
             <p className="text-zinc-400">{viewingHistoricalScan ? 'No source posts available for the selected historical scan.' : 'No source posts available for the latest scan.'}</p>
           ) : (
-            <div className="border border-white/10">
-              {sourcePosts.map((post) => {
+            <div className="border border-white/10 max-h-[44rem] overflow-y-auto">
+              {sortedSourcePosts.map((post) => {
                 const permalink = post?.permalink || (post?.id ? `https://www.reddit.com/comments/${post.id}/` : '');
                 const dateText = post?.created_utc
                   ? new Date(Number(post.created_utc) * 1000).toLocaleDateString()
                   : 'Unknown date';
 
                 return (
-                  <article key={post.id || post.title} className="border-b border-white/10 last:border-b-0 p-5">
+                  <article key={post.id || post.title} className="border-b border-white/10 last:border-b-0 p-5 hover:bg-white/[0.02]">
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <h3 className="text-2xl font-semibold leading-snug text-zinc-100">
-                          {post.title || 'Untitled post'}
+                          {permalink ? (
+                            <a
+                              href={permalink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="hover:text-white underline-offset-4 hover:underline"
+                            >
+                              {post.title || 'Untitled post'}
+                            </a>
+                          ) : (
+                            post.title || 'Untitled post'
+                          )}
                         </h3>
                         <p className="font-mono text-sm text-zinc-500 mt-2">
                           {Number(post.score || 0)} pts  {Number(post.num_comments || 0)} comments  {dateText}
