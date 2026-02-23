@@ -542,6 +542,84 @@ const compareDeltaTone = (value, { inverted = false } = {}) => {
   return num > 0 ? 'text-[#7CFF9A]' : 'text-[#FF4569]';
 };
 
+const toFiniteNumber = (value, fallback = 0) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const themeMovementTone = (status) => {
+  const value = String(status || '').toLowerCase();
+  if (value === 'new' || value === 'rising') return 'text-[#7CFF9A] border-[#7CFF9A]/25 bg-[#7CFF9A]/5';
+  if (value === 'falling' || value === 'dropped') return 'text-[#FF4569] border-[#FF4569]/25 bg-[#FF4569]/5';
+  return 'text-zinc-300 border-white/10 bg-white/[0.02]';
+};
+
+const buildThemeTrackingRows = (themeChanges) => {
+  const fromSignals = toArray(themeChanges?.from_signals);
+  const toSignals = toArray(themeChanges?.to_signals);
+  const fromMap = new Map();
+  const toMap = new Map();
+
+  fromSignals.forEach((row) => {
+    const key = String(row?.key || '').trim();
+    if (!key) return;
+    fromMap.set(key, row);
+  });
+  toSignals.forEach((row) => {
+    const key = String(row?.key || '').trim();
+    if (!key) return;
+    toMap.set(key, row);
+  });
+
+  const rows = [];
+  const keys = new Set([...fromMap.keys(), ...toMap.keys()]);
+
+  keys.forEach((key) => {
+    const fromRow = fromMap.get(key) || null;
+    const toRow = toMap.get(key) || null;
+
+    const fromScore = toFiniteNumber(fromRow?.score, 0);
+    const toScore = toFiniteNumber(toRow?.score, 0);
+    const fromMentions = Math.max(0, Math.trunc(toFiniteNumber(fromRow?.mention_count, 0)));
+    const toMentions = Math.max(0, Math.trunc(toFiniteNumber(toRow?.mention_count, 0)));
+    const scoreDelta = Number((toScore - fromScore).toFixed(1));
+    const mentionsDelta = toMentions - fromMentions;
+
+    let status = 'stable';
+    if (!fromRow && toRow) {
+      status = 'new';
+    } else if (fromRow && !toRow) {
+      status = 'dropped';
+    } else if (scoreDelta >= 1 || (scoreDelta >= 0.5 && mentionsDelta > 0)) {
+      status = 'rising';
+    } else if (scoreDelta <= -1 || (scoreDelta <= -0.5 && mentionsDelta < 0)) {
+      status = 'falling';
+    }
+
+    rows.push({
+      key,
+      label: String((toRow?.label || fromRow?.label || key) || key),
+      status,
+      fromScore,
+      toScore,
+      scoreDelta,
+      fromMentions,
+      toMentions,
+      mentionsDelta,
+    });
+  });
+
+  rows.sort((a, b) => {
+    const aMove = Math.abs(a.scoreDelta) + (Math.abs(a.mentionsDelta) * 0.25);
+    const bMove = Math.abs(b.scoreDelta) + (Math.abs(b.mentionsDelta) * 0.25);
+    if (bMove !== aMove) return bMove - aMove;
+    if (b.toScore !== a.toScore) return b.toScore - a.toScore;
+    return a.label.localeCompare(b.label);
+  });
+
+  return rows;
+};
+
 const ScanChangePanel = ({ compareData, loading, error }) => {
   if (!loading && !error && !compareData) return null;
 
@@ -552,6 +630,17 @@ const ScanChangePanel = ({ compareData, loading, error }) => {
   const painChanges = toObject(compareData?.pain_point_changes);
   const winChanges = toObject(compareData?.win_changes);
   const subredditChanges = toArray(compareData?.subreddit_sentiment_changes);
+  const themeSignalBased = Boolean(themeChanges?.signal_based);
+  const themeRawCounts = toObject(themeChanges?.raw_counts);
+  const themeTrackingRows = themeSignalBased ? buildThemeTrackingRows(themeChanges) : [];
+  const totalThemeMovement = themeSignalBased
+    ? (
+      Number(themeRawCounts?.new || 0)
+      + Number(themeRawCounts?.rising || 0)
+      + Number(themeRawCounts?.falling || 0)
+      + Number(themeRawCounts?.removed || 0)
+    )
+    : Number(summary?.theme_new_count || 0);
 
   return (
     <section className="card-glass p-6">
@@ -593,8 +682,11 @@ const ScanChangePanel = ({ compareData, loading, error }) => {
               </p>
             </article>
             <article className="border border-white/10 bg-black/20 p-3">
-              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">New Themes</p>
-              <p className="mt-2 text-2xl font-heading font-black text-[#8BE8FF]">{Number(summary?.theme_new_count || 0)}</p>
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">Theme Movement</p>
+              <p className="mt-2 text-2xl font-heading font-black text-[#8BE8FF]">{Number(totalThemeMovement || 0)}</p>
+              {themeSignalBased ? (
+                <p className="text-[11px] text-zinc-500 mt-1">stable IDs tracked</p>
+              ) : null}
             </article>
             <article className="border border-white/10 bg-black/20 p-3">
               <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-500">New Pain Points</p>
@@ -610,8 +702,57 @@ const ScanChangePanel = ({ compareData, loading, error }) => {
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
             <div className="border border-white/10 bg-black/20 p-4">
-              <h3 className="font-heading text-xl font-bold text-[#8BE8FF] mb-3">Theme Changes</h3>
-              {Number(themeChanges?.new_count || 0) === 0 && Number(themeChanges?.removed_count || 0) === 0 ? (
+              <h3 className="font-heading text-xl font-bold text-[#8BE8FF] mb-3">Theme Tracking</h3>
+              {themeSignalBased ? (
+                <>
+                  <p className="text-xs text-zinc-400 mb-3">
+                    Themes are tracked using stable labels and signal scores (not AI wording), so trend changes are easier to follow over time.
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
+                    <div className="border border-white/10 p-2">
+                      <span className="text-zinc-500">New</span>
+                      <span className="ml-2 text-[#7CFF9A] font-semibold">{Number(themeRawCounts?.new || 0)}</span>
+                    </div>
+                    <div className="border border-white/10 p-2">
+                      <span className="text-zinc-500">Rising</span>
+                      <span className="ml-2 text-[#7CFF9A] font-semibold">{Number(themeRawCounts?.rising || 0)}</span>
+                    </div>
+                    <div className="border border-white/10 p-2">
+                      <span className="text-zinc-500">Falling</span>
+                      <span className="ml-2 text-[#FF4569] font-semibold">{Number(themeRawCounts?.falling || 0)}</span>
+                    </div>
+                    <div className="border border-white/10 p-2">
+                      <span className="text-zinc-500">Dropped</span>
+                      <span className="ml-2 text-[#FF4569] font-semibold">{Number(themeRawCounts?.removed || 0)}</span>
+                    </div>
+                  </div>
+
+                  {themeTrackingRows.length === 0 ? (
+                    <p className="text-sm text-zinc-500">No tracked theme movement detected.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {themeTrackingRows.slice(0, 6).map((row) => (
+                        <div key={`theme-track-${row.key}`} className="border border-white/10 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-zinc-100">{row.label}</p>
+                              <p className="text-[11px] text-zinc-500 mt-1">
+                                Signal {row.fromScore.toFixed(1)} -> {row.toScore.toFixed(1)} ({formatSignedNumber(row.scoreDelta)})
+                                {'  '}|{'  '}
+                                Mentions {row.fromMentions} -> {row.toMentions} ({formatSignedNumber(row.mentionsDelta)})
+                              </p>
+                            </div>
+                            <span className={`px-2 py-1 text-[11px] border uppercase tracking-[0.12em] ${themeMovementTone(row.status)}`}>
+                              {row.status}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : Number(themeChanges?.new_count || 0) === 0 && Number(themeChanges?.removed_count || 0) === 0 ? (
                 <p className="text-sm text-zinc-500">No major theme movement detected.</p>
               ) : (
                 <div className="space-y-3 text-sm">
