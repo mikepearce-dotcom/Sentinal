@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import uuid
@@ -189,6 +190,449 @@ def _build_item_change_set(
     }
 
 
+_THEME_SIGNAL_STOP_WORDS = {
+    "the", "and", "with", "from", "this", "that", "have", "your", "about", "into", "they",
+    "their", "them", "what", "when", "where", "which", "were", "been", "just", "also", "more",
+    "some", "many", "over", "than", "there", "users", "community", "game", "reddit", "player",
+    "players", "feel", "feels", "really", "very", "still", "mode", "modes", "thread", "post",
+}
+
+_THEME_SIGNAL_BUCKETS: List[Dict[str, Any]] = [
+    {
+        "key": "pvp_pve_tension",
+        "label": "PvP vs PvE Tension",
+        "tokens": {"pvp", "pve", "encounter", "encounters", "lobbies"},
+        "phrases": ["pvp vs pve", "pve experience", "pvp encounters", "pve-only"],
+    },
+    {
+        "key": "pve_only_requests",
+        "label": "PvE-Only Requests",
+        "tokens": {"pve", "cooperative", "coop"},
+        "phrases": ["pve only", "pve-only", "pve mode", "co-op only", "coop only"],
+    },
+    {
+        "key": "matchmaking_balance",
+        "label": "Matchmaking & Lobby Balance",
+        "tokens": {"matchmaking", "matched", "mismatch", "lobby", "lobbies", "sweaty"},
+        "phrases": ["skill based", "matched against", "aggressive lobbies", "matchmaking"],
+    },
+    {
+        "key": "performance_stability",
+        "label": "Performance & Stability",
+        "tokens": {"crash", "crashes", "lag", "stutter", "performance", "fps", "freeze", "disconnect"},
+        "phrases": ["frame rate", "low fps", "performance issue", "server lag"],
+    },
+    {
+        "key": "queue_times",
+        "label": "Queue Times & Match Start Delay",
+        "tokens": {"queue", "queues", "queued", "waiting", "delay", "delays"},
+        "phrases": ["queue time", "long queue", "match start"],
+    },
+    {
+        "key": "balance_tuning",
+        "label": "Balance & Tuning",
+        "tokens": {"balance", "balanced", "unbalanced", "nerf", "buff", "meta", "weapon"},
+        "phrases": ["too strong", "too weak", "needs nerf", "needs buff"],
+    },
+    {
+        "key": "progression_rewards",
+        "label": "Progression & Rewards",
+        "tokens": {"progression", "progress", "xp", "reward", "rewards", "unlock", "unlocks", "grind"},
+        "phrases": ["battle pass", "too grindy", "rewarding", "progression"],
+    },
+    {
+        "key": "content_variety",
+        "label": "Content Variety & Modes",
+        "tokens": {"content", "map", "maps", "mission", "missions", "mode", "modes", "variety"},
+        "phrases": ["more content", "new map", "new mode", "content drought"],
+    },
+    {
+        "key": "cheaters_exploits",
+        "label": "Cheaters & Exploits",
+        "tokens": {"cheater", "cheaters", "hack", "hacker", "hackers", "exploit", "exploits"},
+        "phrases": ["anti cheat", "anti-cheat", "cheater problem"],
+    },
+    {
+        "key": "social_toxicity",
+        "label": "Toxicity & Player Behavior",
+        "tokens": {"toxic", "toxicity", "grief", "griefing", "sweats", "sweaty", "camping"},
+        "phrases": ["toxic behavior", "toxic players", "player behavior"],
+    },
+]
+
+
+def _theme_tokens(value: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", str(value or "").lower())
+
+
+def _theme_text_tokens(value: str) -> List[str]:
+    return [
+        token
+        for token in _theme_tokens(value)
+        if len(token) >= 3 and token not in _THEME_SIGNAL_STOP_WORDS
+    ]
+
+
+def _extract_post_ids_from_text(value: str) -> List[str]:
+    ids: List[str] = []
+    for match in re.findall(r"\[POST:([A-Za-z0-9_]+)\]", str(value or "")):
+        post_id = str(match or "").strip()
+        if post_id and post_id not in ids:
+            ids.append(post_id)
+    return ids
+
+
+def _post_theme_weight(post: Dict[str, Any]) -> float:
+    score = max(0, int(post.get("score", 0) or 0))
+    comments = max(0, int(post.get("num_comments", 0) or 0))
+    return 1.0 + math.log(score + 1) + 1.15 * math.log(comments + 1)
+
+
+def _comment_theme_weight(comment: Dict[str, Any]) -> float:
+    score = max(0, int(comment.get("score", 0) or 0))
+    return 0.35 + 0.6 * math.log(score + 1)
+
+
+def _theme_bucket_match_strength(bucket: Dict[str, Any], text: str, tokens: List[str]) -> int:
+    token_set = set(tokens)
+    strength = 0
+    for token in bucket.get("tokens", set()):
+        clean = str(token or "").lower()
+        if clean and clean in token_set:
+            strength += 1
+    lower_text = str(text or "").lower()
+    for phrase in bucket.get("phrases", []):
+        candidate = str(phrase or "").lower().strip()
+        if candidate and candidate in lower_text:
+            strength += 2
+    return strength
+
+
+def _extract_theme_signals(
+    posts: List[Dict[str, Any]],
+    comments: List[Dict[str, Any]],
+    analysis: Optional[Dict[str, Any]] = None,
+    max_signals: int = 8,
+) -> List[Dict[str, Any]]:
+    safe_posts = [post for post in _safe_list(posts) if isinstance(post, dict)]
+    safe_comments = [comment for comment in _safe_list(comments) if isinstance(comment, dict)]
+    safe_analysis = analysis if isinstance(analysis, dict) else {}
+
+    bucket_rows: Dict[str, Dict[str, Any]] = {}
+    for bucket in _THEME_SIGNAL_BUCKETS:
+        bucket_rows[str(bucket["key"])] = {
+            "key": str(bucket["key"]),
+            "label": str(bucket["label"]),
+            "score": 0.0,
+            "mention_posts": set(),
+        }
+
+    # Score posts (title + selftext) into stable buckets.
+    for post in safe_posts:
+        post_id = str(post.get("id") or "").strip()
+        text = f"{post.get('title', '')} {post.get('selftext', '')}"
+        tokens = _theme_text_tokens(text)
+        if not tokens:
+            continue
+        weight = _post_theme_weight(post)
+
+        for bucket in _THEME_SIGNAL_BUCKETS:
+            strength = _theme_bucket_match_strength(bucket, text, tokens)
+            if strength <= 0:
+                continue
+            row = bucket_rows[str(bucket["key"])]
+            row["score"] += weight * (1.0 + (0.15 * max(0, strength - 1)))
+            if post_id:
+                row["mention_posts"].add(post_id)
+
+    # Score sampled comments into the same buckets with smaller weight.
+    for comment in safe_comments:
+        body = str(comment.get("body", "") or "")
+        tokens = _theme_text_tokens(body)
+        if not tokens:
+            continue
+        weight = _comment_theme_weight(comment)
+        source_post_id = str(comment.get("source_post_id") or "").strip()
+
+        for bucket in _THEME_SIGNAL_BUCKETS:
+            strength = _theme_bucket_match_strength(bucket, body, tokens)
+            if strength <= 0:
+                continue
+            row = bucket_rows[str(bucket["key"])]
+            row["score"] += weight * (0.75 + (0.1 * max(0, strength - 1)))
+            if source_post_id:
+                row["mention_posts"].add(source_post_id)
+
+    # Use AI-extracted themes as a lightweight boost, but not as the canonical identity.
+    for theme_text in _analysis_list_texts(safe_analysis, "themes", max_items=12):
+        theme_tokens = _theme_text_tokens(theme_text)
+        if not theme_tokens:
+            continue
+        for bucket in _THEME_SIGNAL_BUCKETS:
+            strength = _theme_bucket_match_strength(bucket, theme_text, theme_tokens)
+            if strength <= 0:
+                continue
+            row = bucket_rows[str(bucket["key"])]
+            row["score"] += 1.2 + (0.3 * max(0, strength - 1))
+            for post_id in _extract_post_ids_from_text(theme_text):
+                row["mention_posts"].add(post_id)
+
+    # Add dynamic title phrases for game-specific themes not covered by the static buckets.
+    phrase_rows: Dict[str, Dict[str, Any]] = {}
+    phrase_stop = _THEME_SIGNAL_STOP_WORDS.union({"pvp", "pve", "matchmaking", "mode", "modes"})
+
+    for post in safe_posts:
+        post_id = str(post.get("id") or "").strip()
+        title = str(post.get("title", "") or "")
+        tokens = [token for token in _theme_tokens(title) if len(token) >= 3 and token not in phrase_stop]
+        if len(tokens) < 2:
+            continue
+        weight = _post_theme_weight(post)
+        seen_in_post = set()
+
+        for n in (3, 2):
+            if len(tokens) < n:
+                continue
+            for idx in range(len(tokens) - n + 1):
+                phrase_tokens = tokens[idx : idx + n]
+                phrase = " ".join(phrase_tokens)
+                if phrase in seen_in_post:
+                    continue
+                seen_in_post.add(phrase)
+
+                key = "title:" + "-".join(phrase_tokens[:4])
+                row = phrase_rows.get(key)
+                if row is None:
+                    row = {
+                        "key": key,
+                        "label": phrase.title(),
+                        "score": 0.0,
+                        "mention_posts": set(),
+                    }
+                    phrase_rows[key] = row
+                row["score"] += weight
+                if post_id:
+                    row["mention_posts"].add(post_id)
+
+    signals: List[Dict[str, Any]] = []
+
+    for row in bucket_rows.values():
+        mentions = sorted(list(row.get("mention_posts", set())))
+        mention_count = len(mentions)
+        score = float(row.get("score", 0.0) or 0.0)
+        if mention_count == 0 or score < 2.25:
+            continue
+        signals.append(
+            {
+                "key": str(row.get("key") or ""),
+                "label": str(row.get("label") or ""),
+                "score": round(score, 3),
+                "mention_count": mention_count,
+                "evidence_post_ids": mentions[:5],
+                "kind": "bucket",
+            }
+        )
+
+    # Keep only stronger dynamic phrases to avoid noisy duplication.
+    phrase_candidates = sorted(
+        phrase_rows.values(),
+        key=lambda item: (float(item.get("score", 0.0) or 0.0), len(item.get("mention_posts", set()))),
+        reverse=True,
+    )
+    added_dynamic = 0
+    for row in phrase_candidates:
+        if added_dynamic >= 4:
+            break
+        mentions = sorted(list(row.get("mention_posts", set())))
+        mention_count = len(mentions)
+        score = float(row.get("score", 0.0) or 0.0)
+        if mention_count < 2 or score < 4.0:
+            continue
+
+        label_tokens = set(_theme_text_tokens(str(row.get("label") or "")))
+        if not label_tokens:
+            continue
+        overlaps_bucket = False
+        for bucket in _THEME_SIGNAL_BUCKETS:
+            bucket_tokens = {str(t).lower() for t in bucket.get("tokens", set())}
+            if len(label_tokens.intersection(bucket_tokens)) >= 2:
+                overlaps_bucket = True
+                break
+        if overlaps_bucket:
+            continue
+
+        signals.append(
+            {
+                "key": str(row.get("key") or ""),
+                "label": str(row.get("label") or ""),
+                "score": round(score, 3),
+                "mention_count": mention_count,
+                "evidence_post_ids": mentions[:5],
+                "kind": "title_phrase",
+            }
+        )
+        added_dynamic += 1
+
+    if not signals:
+        # Fallback to AI themes but store normalized keys to reduce paraphrase noise later.
+        for theme_text in _analysis_list_texts(safe_analysis, "themes", max_items=max_signals):
+            key = _normalize_compare_key(theme_text, prefer_prefix=True)
+            if not key:
+                continue
+            if any(str(item.get("key") or "") == key for item in signals):
+                continue
+            label = str(theme_text).split(" - ", 1)[0].strip() or str(theme_text).strip()
+            signals.append(
+                {
+                    "key": key,
+                    "label": label[:120],
+                    "score": 1.0,
+                    "mention_count": len(_extract_post_ids_from_text(theme_text)),
+                    "evidence_post_ids": _extract_post_ids_from_text(theme_text)[:5],
+                    "kind": "ai_fallback",
+                }
+            )
+            if len(signals) >= max(max_signals, 1):
+                break
+
+    signals.sort(
+        key=lambda item: (
+            float(item.get("score", 0.0) or 0.0),
+            int(item.get("mention_count", 0) or 0),
+            str(item.get("label") or ""),
+        ),
+        reverse=True,
+    )
+    return [dict(item) for item in signals[: max(max_signals, 1)]]
+
+
+def _theme_signal_rows_from_doc(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = doc.get("theme_signals")
+    if isinstance(raw, list):
+        rows: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            label = str(item.get("label") or "").strip()
+            if not key or not label:
+                continue
+            evidence_post_ids = [
+                str(v).strip()
+                for v in (item.get("evidence_post_ids") or [])
+                if str(v).strip()
+            ][:5]
+            rows.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "score": float(item.get("score", 0.0) or 0.0),
+                    "mention_count": int(item.get("mention_count", 0) or 0),
+                    "evidence_post_ids": evidence_post_ids,
+                    "kind": str(item.get("kind") or ""),
+                }
+            )
+        if rows:
+            return rows
+
+    return _extract_theme_signals(
+        _safe_list(doc.get("posts")),
+        _safe_list(doc.get("comments")),
+        doc.get("analysis") if isinstance(doc.get("analysis"), dict) else {},
+    )
+
+
+def _format_theme_signal_change_row(signal: Dict[str, Any], other: Optional[Dict[str, Any]] = None) -> str:
+    label = str(signal.get("label") or signal.get("key") or "Theme").strip()
+    score = round(float(signal.get("score", 0.0) or 0.0), 1)
+    mentions = int(signal.get("mention_count", 0) or 0)
+    refs = [str(v).strip() for v in (signal.get("evidence_post_ids") or []) if str(v).strip()]
+    ref_text = f" [POST:{refs[0]}]" if refs else ""
+
+    if other and isinstance(other, dict):
+        prev_score = round(float(other.get("score", 0.0) or 0.0), 1)
+        prev_mentions = int(other.get("mention_count", 0) or 0)
+        score_delta = round(score - prev_score, 1)
+        mentions_delta = mentions - prev_mentions
+        return (
+            f"{label} - signal {score_delta:+.1f} (now {score:.1f}), mentions {mentions_delta:+d} (now {mentions}){ref_text}"
+        )
+
+    return f"{label} - signal {score:.1f}, mentions {mentions}{ref_text}"
+
+
+def _build_theme_signal_change_set(from_doc: Dict[str, Any], to_doc: Dict[str, Any], max_samples: int = 5) -> Dict[str, Any]:
+    from_rows = _theme_signal_rows_from_doc(from_doc)
+    to_rows = _theme_signal_rows_from_doc(to_doc)
+
+    from_map = {str(item.get("key") or ""): item for item in from_rows if str(item.get("key") or "")}
+    to_map = {str(item.get("key") or ""): item for item in to_rows if str(item.get("key") or "")}
+
+    rising_or_new: List[str] = []
+    lowered_or_removed: List[str] = []
+    persisting: List[str] = []
+    new_count = 0
+    removed_count = 0
+    rising_count = 0
+    falling_count = 0
+    stable_count = 0
+
+    for key, to_signal in to_map.items():
+        from_signal = from_map.get(key)
+        if not from_signal:
+            new_count += 1
+            rising_or_new.append(_format_theme_signal_change_row(to_signal))
+            continue
+
+        to_score = float(to_signal.get("score", 0.0) or 0.0)
+        from_score = float(from_signal.get("score", 0.0) or 0.0)
+        to_mentions = int(to_signal.get("mention_count", 0) or 0)
+        from_mentions = int(from_signal.get("mention_count", 0) or 0)
+        score_delta = to_score - from_score
+        mentions_delta = to_mentions - from_mentions
+
+        if score_delta >= 1.0 or (score_delta >= 0.5 and mentions_delta > 0):
+            rising_count += 1
+            rising_or_new.append(_format_theme_signal_change_row(to_signal, from_signal))
+        elif score_delta <= -1.0 or (score_delta <= -0.5 and mentions_delta < 0):
+            falling_count += 1
+            lowered_or_removed.append(_format_theme_signal_change_row(from_signal, to_signal))
+        else:
+            stable_count += 1
+            persisting.append(_format_theme_signal_change_row(to_signal, from_signal))
+
+    for key, from_signal in from_map.items():
+        if key in to_map:
+            continue
+        removed_count += 1
+        lowered_or_removed.append(_format_theme_signal_change_row(from_signal))
+
+    return {
+        "new": rising_or_new[:max_samples],
+        "removed": lowered_or_removed[:max_samples],
+        "persisting": persisting[:max_samples],
+        "new_count": new_count + rising_count,
+        "removed_count": removed_count + falling_count,
+        "persisting_count": stable_count,
+        "signal_based": True,
+        "raw_counts": {
+            "new": new_count,
+            "removed": removed_count,
+            "rising": rising_count,
+            "falling": falling_count,
+            "stable": stable_count,
+        },
+        "from_signals": [
+            {"key": item.get("key"), "label": item.get("label"), "score": item.get("score"), "mention_count": item.get("mention_count")}
+            for item in from_rows[:10]
+        ],
+        "to_signals": [
+            {"key": item.get("key"), "label": item.get("label"), "score": item.get("score"), "mention_count": item.get("mention_count")}
+            for item in to_rows[:10]
+        ],
+    }
+
+
 def _subreddit_sentiment_map(doc: Dict[str, Any]) -> Dict[str, str]:
     breakdown = doc.get("subreddit_breakdown")
     if not isinstance(breakdown, dict):
@@ -256,11 +700,7 @@ def _build_compare_payload(from_doc: Dict[str, Any], to_doc: Dict[str, Any]) -> 
     if from_created_at and to_created_at:
         days_between = round(max((to_created_at - from_created_at).total_seconds(), 0.0) / 86400.0, 2)
 
-    theme_changes = _build_item_change_set(
-        _analysis_list_texts(from_analysis, "themes", max_items=12),
-        _analysis_list_texts(to_analysis, "themes", max_items=12),
-        prefer_prefix=True,
-    )
+    theme_changes = _build_theme_signal_change_set(from_doc, to_doc)
     pain_point_changes = _build_item_change_set(
         _analysis_list_texts(from_analysis, "pain_points", max_items=8),
         _analysis_list_texts(to_analysis, "pain_points", max_items=8),
@@ -341,17 +781,22 @@ async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depen
         if not game:
             raise HTTPException(status_code=404, detail="Game not found")
 
+        multi_posts = _safe_list(result.get("_posts"))
+        multi_comments = _safe_list(result.get("_comments"))
+        overall_analysis = result.get("overall") if isinstance(result.get("overall"), dict) else {}
+
         scan_doc = {
             "_id": str(uuid.uuid4()),
             "game_id": game_id,
             "user_id": user["user_id"],
             "created_at": datetime.utcnow(),
-            "posts": _safe_list(result.get("_posts")),
-            "comments": _safe_list(result.get("_comments")),
-            "analysis": result.get("overall") or {},
+            "posts": multi_posts,
+            "comments": multi_comments,
+            "analysis": overall_analysis,
             "scan_type": "multi",
             "subreddit_breakdown": result.get("subreddit_breakdown") or {"breakdown": []},
             "meta": result.get("meta") or {},
+            "theme_signals": _extract_theme_signals(multi_posts, multi_comments, overall_analysis),
         }
         await database.db.scan_results.insert_one(scan_doc)
 
@@ -413,6 +858,7 @@ async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
         "comments": comments,
         "analysis": analysis,
         "scan_type": "single",
+        "theme_signals": _extract_theme_signals(posts, comments, analysis),
     }
 
     await database.db.scan_results.insert_one(result)
