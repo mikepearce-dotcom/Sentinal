@@ -377,6 +377,189 @@ const InsightColumn = ({ title, icon, entries, sourcePosts, postsById, tone = 'n
   );
 };
 
+
+const normalizeTopPriorityEntries = (entries, postsById) => {
+  return toArray(entries)
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+
+      const title = String(entry.title || entry.label || '').trim();
+      const whyItMatters = String(entry.why_it_matters || entry.why || '').trim();
+      const impactSummary = String(entry.impact_summary || '').trim();
+      const suggestion = String(entry.suggestion || entry.recommendation || '').trim();
+      const category = String(entry.category || 'Player Experience').trim();
+      const priorityType = String(entry.priority_type || 'Risk Mitigation').trim();
+      const severity = String(entry.severity || 'Medium').trim();
+      const confidence = String(entry.confidence || 'Medium').trim();
+      const metrics = toObject(entry.metrics);
+      const evidenceThreads = Number(entry.evidence_threads || metrics.evidence_threads || 0) || 0;
+      const mentionCount = Number(metrics.mention_count || entry.mention_count || 0) || 0;
+      const signalScore = Number(metrics.signal_score || entry.signal_score || 0) || 0;
+      const painClusterCount = Number(metrics.pain_cluster_count || entry.pain_cluster_count || 0) || 0;
+
+      const textForPostRefs = [whyItMatters, impactSummary, ...toArray(entry.supporting_points).map(normalizeListEntry)]
+        .filter(Boolean)
+        .join(' ');
+
+      const postIds = extractPostIdsFromText(textForPostRefs);
+      const fromIds = postIds
+        .map((postId) => toPermalink(postId, postsById))
+        .filter(Boolean);
+      const fromEvidence = normalizeEvidenceLinks(entry.evidence);
+      const evidenceLinks = [];
+      [...fromEvidence, ...fromIds].forEach((link) => {
+        if (!evidenceLinks.includes(link)) evidenceLinks.push(link);
+      });
+
+      return {
+        title: title || 'Priority Signal',
+        category,
+        priorityType,
+        severity,
+        confidence,
+        whyItMatters,
+        impactSummary,
+        suggestion,
+        supportingPoints: toArray(entry.supporting_points).map(normalizeListEntry).filter(Boolean).slice(0, 2),
+        evidenceLinks,
+        evidenceThreads,
+        mentionCount,
+        signalScore,
+        painClusterCount,
+        multiThreadEvidence: Boolean(entry.multi_thread_evidence) || evidenceThreads >= 2,
+      };
+    })
+    .filter(Boolean);
+};
+
+const prioritySeverityStyles = (value) => {
+  const v = String(value || '').toLowerCase();
+  if (v.includes('high')) return 'text-[#FF4569] border-[#FF4569]/30 bg-[#FF4569]/8';
+  if (v.includes('medium')) return 'text-[#FCEE0A] border-[#FCEE0A]/30 bg-[#FCEE0A]/6';
+  if (v.includes('low')) return 'text-[#7CFF9A] border-[#7CFF9A]/30 bg-[#7CFF9A]/8';
+  return 'text-zinc-300 border-white/15 bg-white/5';
+};
+
+const priorityConfidenceStyles = (value) => {
+  const v = String(value || '').toLowerCase();
+  if (v.includes('high')) return 'text-[#8BE8FF] border-[#8BE8FF]/30 bg-[#8BE8FF]/8';
+  if (v.includes('medium')) return 'text-zinc-200 border-white/15 bg-white/5';
+  if (v.includes('low')) return 'text-zinc-400 border-white/10 bg-white/[0.03]';
+  return 'text-zinc-300 border-white/15 bg-white/5';
+};
+
+const TopPrioritiesPanel = ({ title = 'Top Product Priorities', priorities, postsById }) => {
+  const rows = toArray(priorities);
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="card-glass p-6">
+      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+        <div>
+          <h2 className="font-heading text-4xl font-black">{title}</h2>
+          <p className="text-sm text-zinc-400 mt-1">
+            Evidence-backed priorities scored from repeated pain points and tracked theme signals. Use this as a decision queue, not a single-thread anecdote list.
+          </p>
+        </div>
+        <span className="font-mono text-xs text-zinc-500">{rows.length} ranked items</span>
+      </div>
+
+      <div className="space-y-4">
+        {rows.map((item, idx) => (
+          <article key={`${title}-${idx}-${item.title}`} className="border border-white/10 bg-black/20 p-4">
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-xs text-[#8BE8FF]">{String(idx + 1).padStart(2, '0')}</span>
+                  <h3 className="font-heading text-2xl font-bold leading-tight text-zinc-100">{item.title}</h3>
+                </div>
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className="px-2 py-1 text-[11px] border border-white/10 bg-white/[0.03] text-zinc-300 uppercase tracking-[0.12em]">
+                    {item.category}
+                  </span>
+                  <span className="px-2 py-1 text-[11px] border border-white/10 bg-white/[0.03] text-zinc-400 uppercase tracking-[0.12em]">
+                    {item.priorityType}
+                  </span>
+                  <span className={`px-2 py-1 text-[11px] border uppercase tracking-[0.12em] ${prioritySeverityStyles(item.severity)}`}>
+                    Severity {item.severity}
+                  </span>
+                  <span className={`px-2 py-1 text-[11px] border uppercase tracking-[0.12em] ${priorityConfidenceStyles(item.confidence)}`}>
+                    Confidence {item.confidence}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div className="border border-white/10 p-2 bg-black/20">
+                <p className="text-zinc-500">Signal score</p>
+                <p className="mt-1 font-semibold text-zinc-100">{Number(item.signalScore || 0).toFixed(1)}</p>
+              </div>
+              <div className="border border-white/10 p-2 bg-black/20">
+                <p className="text-zinc-500">Theme mentions</p>
+                <p className="mt-1 font-semibold text-zinc-100">{Number(item.mentionCount || 0)}</p>
+              </div>
+              <div className="border border-white/10 p-2 bg-black/20">
+                <p className="text-zinc-500">Evidence threads</p>
+                <p className="mt-1 font-semibold text-zinc-100">{Number(item.evidenceThreads || 0)}</p>
+              </div>
+              <div className="border border-white/10 p-2 bg-black/20">
+                <p className="text-zinc-500">Pain clusters</p>
+                <p className="mt-1 font-semibold text-zinc-100">{Number(item.painClusterCount || 0)}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-4">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1">Why This Matters</p>
+                <p className="text-sm text-zinc-200 leading-relaxed">{renderTextWithPostRefs(item.whyItMatters || 'Repeated player friction detected in recent high-signal threads.', postsById)}</p>
+              </div>
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1">Studio Impact</p>
+                <p className="text-sm text-zinc-300 leading-relaxed">{renderTextWithPostRefs(item.impactSummary || 'Likely to influence player sentiment and retention if not addressed.', postsById)}</p>
+              </div>
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1">Suggested Next Move</p>
+                <p className="text-sm text-zinc-100 leading-relaxed">{renderTextWithPostRefs(item.suggestion || 'Validate with telemetry and ship a targeted follow-up.', postsById)}</p>
+              </div>
+            </div>
+
+            {item.supportingPoints.length > 0 ? (
+              <div className="mt-4">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1">Supporting Signals</p>
+                <ul className="space-y-1 text-sm text-zinc-300">
+                  {item.supportingPoints.map((point, pointIdx) => (
+                    <li key={`priority-point-${idx}-${pointIdx}`}>- {renderTextWithPostRefs(point, postsById)}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                {item.evidenceLinks.map((link, linkIdx) => (
+                  <a
+                    key={`priority-source-${idx}-${linkIdx}`}
+                    href={link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex text-xs border border-white/10 bg-white/[0.03] px-2 py-1 text-zinc-300 hover:text-white hover:border-white/20"
+                  >
+                    [source {linkIdx + 1}]
+                  </a>
+                ))}
+              </div>
+              <span className={`text-xs ${item.multiThreadEvidence ? 'text-zinc-400' : 'text-amber-300'}`}>
+                {item.multiThreadEvidence ? 'Evidence spans multiple threads' : 'Single-thread evidence - validate before prioritizing'}
+              </span>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+};
+
 const SentimentTrend = ({
   history,
   windowValue = '30d',
@@ -1259,6 +1442,10 @@ const GameDetail = () => {
     () => normalizeInsightEntries(analysis.wins, sourcePostsById),
     [analysis.wins, sourcePostsById]
   );
+  const topPriorities = useMemo(
+    () => normalizeTopPriorityEntries(analysis.top_priorities, sourcePostsById),
+    [analysis.top_priorities, sourcePostsById]
+  );
 
   const history = useMemo(() => {
     return results.map((result) => {
@@ -1417,6 +1604,10 @@ const GameDetail = () => {
   const multiOverallWins = useMemo(
     () => normalizeInsightEntries(multiOverall?.wins, {}),
     [multiOverall?.wins]
+  );
+  const multiTopPriorities = useMemo(
+    () => normalizeTopPriorityEntries(multiOverall?.top_priorities, {}),
+    [multiOverall?.top_priorities]
   );
 
   if (loading) {
@@ -1645,6 +1836,12 @@ const GameDetail = () => {
               />
             </section>
 
+            <TopPrioritiesPanel
+              title="Top Product Priorities (Combined)"
+              priorities={multiTopPriorities}
+              postsById={{}}
+            />
+
             <section className="card-glass p-0 overflow-hidden">
               <div className="border-l-4 border-[#00E5FF] p-6 md:p-8">
                 <h2 className="font-heading text-4xl font-black mb-4">Combined Sentiment Analysis</h2>
@@ -1821,6 +2018,12 @@ const GameDetail = () => {
           />
           <MetricCard label="Last Scanned" value={formatShortTime(lastScanned)} />
         </section>
+
+        <TopPrioritiesPanel
+          title="Top Product Priorities"
+          priorities={topPriorities}
+          postsById={sourcePostsById}
+        />
 
         <section className="card-glass p-0 overflow-hidden">
           <div className="border-l-4 border-[#D3F34B] p-6 md:p-8">

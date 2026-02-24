@@ -56,7 +56,7 @@ def _scan_out_from_doc(doc: Dict[str, Any]) -> ScanResultOut:
     return ScanResultOut(
         id=str(doc.get("_id") or doc.get("id")),
         created_at=doc.get("created_at"),
-        analysis=doc.get("analysis") or {},
+        analysis=_analysis_with_top_priorities(doc),
         posts_count=len(posts),
         comments_count=len(comments),
         scan_type=(str(doc.get("scan_type") or "").strip() or None),
@@ -67,7 +67,7 @@ def _scan_detail_out_from_doc(doc: Dict[str, Any]) -> ScanResultDetailOut:
     return ScanResultDetailOut(
         id=str(doc.get("_id") or doc.get("id")),
         created_at=doc.get("created_at"),
-        analysis=doc.get("analysis") or {},
+        analysis=_analysis_with_top_priorities(doc),
         posts=_safe_list(doc.get("posts")),
         comments=_safe_list(doc.get("comments")),
         scan_type=(str(doc.get("scan_type") or "").strip() or None),
@@ -542,6 +542,397 @@ def _theme_signal_rows_from_doc(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     )
 
 
+
+def _extract_post_id_from_evidence_link(value: str) -> str:
+    match = re.search(r"reddit\.com/comments/([a-z0-9_]+)", str(value or ""), re.IGNORECASE)
+    if match:
+        return str(match.group(1) or "").strip()
+    return ""
+
+
+def _post_permalink(post_id: str) -> str:
+    clean = str(post_id or "").strip()
+    return f"https://www.reddit.com/comments/{clean}/" if clean else ""
+
+
+def _priority_tokens(value: str) -> List[str]:
+    return [token for token in _theme_text_tokens(value) if len(token) >= 3]
+
+
+def _priority_first_sentence(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\[POST:[A-Za-z0-9_]+\]", "", text).strip()
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    return (parts[0] if parts else text)[:260].strip()
+
+
+def _priority_title_from_text(value: str) -> str:
+    text = _priority_first_sentence(value)
+    if not text:
+        return "Player Friction Signal"
+
+    lowered = text.lower()
+    prefixes = [
+        "players report friction around",
+        "players report friction",
+        "players frequently encounter",
+        "players often encounter",
+        "players express dissatisfaction with",
+        "players express frustration with",
+        "many players express",
+        "many users express",
+        "there is a significant frustration regarding",
+    ]
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip(" :,-")
+            break
+
+    text = text[:120].strip()
+    if not text:
+        return "Player Friction Signal"
+
+    return text[0].upper() + text[1:]
+
+
+_PRIORITY_SIGNAL_PROFILES: Dict[str, Dict[str, str]] = {
+    "pvp_pve_tension": {
+        "category": "Experience Design",
+        "impact": "Expectation mismatch is a retention risk for players seeking cooperative sessions.",
+        "suggestion": "Clarify intended risk profile in matchmaking/UI and test rulesets or playlist segmentation that reduce unwanted PvP collisions for PvE-leaning players.",
+    },
+    "pve_only_requests": {
+        "category": "Mode Strategy",
+        "impact": "Repeated requests for safer PvE loops indicate unmet demand that can suppress conversion and session length.",
+        "suggestion": "Run a scoped experiment (limited playlist, event queue, or private rule variant) and measure retention, extraction success, and party return rate.",
+    },
+    "matchmaking_balance": {
+        "category": "Matchmaking",
+        "impact": "Poor lobby balance directly degrades fairness perception and increases churn after losses.",
+        "suggestion": "Audit lobby composition logic by skill/party size and add telemetry on matchup spread, quit rate, and early-loss streaks to validate tuning changes.",
+    },
+    "performance_stability": {
+        "category": "Stability",
+        "impact": "Performance and crash complaints create immediate session abandonment risk.",
+        "suggestion": "Prioritize crash/lag triage by device or map cluster, ship targeted fixes, and publish patch-note callouts so affected users know the issue is being addressed.",
+    },
+    "queue_times": {
+        "category": "Operations",
+        "impact": "Long queues erode session starts and lower conversion into actual gameplay.",
+        "suggestion": "Profile queue time by region/time-of-day/mode and adjust matchmaking constraints or queue messaging to reduce abandonment.",
+    },
+    "balance_tuning": {
+        "category": "Balance",
+        "impact": "Perceived imbalance narrows viable playstyles and destabilizes meta satisfaction.",
+        "suggestion": "Review outlier weapons/abilities using win-rate and pick-rate slices, then ship narrowly scoped tuning changes with before/after telemetry checkpoints.",
+    },
+    "progression_rewards": {
+        "category": "Progression",
+        "impact": "Progression friction weakens long-term retention and repeat-session motivation.",
+        "suggestion": "Audit reward pacing at key milestones and test adjustments to unlock cadence or payout clarity where drop-off is strongest.",
+    },
+    "content_variety": {
+        "category": "Content Strategy",
+        "impact": "Content variety concerns can reduce replayability even when core mechanics are strong.",
+        "suggestion": "Prioritize high-repeatability content additions or rotation updates, and communicate near-term content cadence to reduce uncertainty.",
+    },
+    "cheaters_exploits": {
+        "category": "Trust & Safety",
+        "impact": "Cheating/exploit reports damage trust quickly and can contaminate sentiment across the wider community.",
+        "suggestion": "Triage exploit reports by reproducibility, increase detection/enforcement visibility, and communicate actions taken to rebuild trust.",
+    },
+    "social_toxicity": {
+        "category": "Community Health",
+        "impact": "Toxicity complaints reduce perceived fairness and social stickiness, especially for new or solo players.",
+        "suggestion": "Tighten moderation/reporting UX and identify repeat abuse patterns (griefing, harassment) for targeted enforcement or design mitigation.",
+    },
+}
+
+
+def _priority_profile_for_signal(signal_key: str, text: str) -> Dict[str, str]:
+    profile = _PRIORITY_SIGNAL_PROFILES.get(str(signal_key or "").strip())
+    if profile:
+        return dict(profile)
+
+    lowered = str(text or "").lower()
+    if any(token in lowered for token in ("crash", "lag", "stutter", "disconnect", "fps")):
+        return dict(_PRIORITY_SIGNAL_PROFILES["performance_stability"])
+    if any(token in lowered for token in ("matchmaking", "lobby", "match")):
+        return dict(_PRIORITY_SIGNAL_PROFILES["matchmaking_balance"])
+    if any(token in lowered for token in ("queue", "waiting", "delay")):
+        return dict(_PRIORITY_SIGNAL_PROFILES["queue_times"])
+    if any(token in lowered for token in ("reward", "progression", "grind", "unlock")):
+        return dict(_PRIORITY_SIGNAL_PROFILES["progression_rewards"])
+    if any(token in lowered for token in ("toxic", "grief", "camping")):
+        return dict(_PRIORITY_SIGNAL_PROFILES["social_toxicity"])
+    if any(token in lowered for token in ("cheat", "hack", "exploit")):
+        return dict(_PRIORITY_SIGNAL_PROFILES["cheaters_exploits"])
+
+    return {
+        "category": "Player Experience",
+        "impact": "Repeated negative feedback in high-signal threads is likely suppressing player satisfaction and return intent.",
+        "suggestion": "Validate the root cause with telemetry + replay samples, ship a targeted iteration, and monitor sentiment plus session metrics after the change.",
+    }
+
+
+def _severity_from_priority_metrics(
+    signal_score: float,
+    mention_count: int,
+    evidence_threads: int,
+    pain_cluster_count: int,
+    sentiment_label: str,
+) -> str:
+    points = 0
+    if signal_score >= 140:
+        points += 3
+    elif signal_score >= 80:
+        points += 2
+    elif signal_score >= 35:
+        points += 1
+
+    if mention_count >= 12:
+        points += 2
+    elif mention_count >= 6:
+        points += 1
+
+    if evidence_threads >= 3:
+        points += 1
+    if pain_cluster_count >= 2:
+        points += 1
+    if str(sentiment_label or "").lower() == "negative":
+        points += 1
+
+    if points >= 6:
+        return "High"
+    if points >= 3:
+        return "Medium"
+    return "Low"
+
+
+def _confidence_from_priority_metrics(signal_score: float, mention_count: int, evidence_threads: int, pain_cluster_count: int) -> str:
+    points = 0
+    if evidence_threads >= 3:
+        points += 2
+    elif evidence_threads >= 2:
+        points += 1
+
+    if mention_count >= 6:
+        points += 1
+    if signal_score >= 50:
+        points += 1
+    if pain_cluster_count >= 2:
+        points += 1
+
+    if points >= 4:
+        return "High"
+    if points >= 2:
+        return "Medium"
+    return "Low"
+
+
+def _match_theme_signal_for_text(text: str, evidence_post_ids: List[str], theme_rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    text_tokens = set(_priority_tokens(text))
+    evidence_set = {str(v).strip() for v in evidence_post_ids if str(v).strip()}
+
+    best: Optional[Dict[str, Any]] = None
+    best_score = 0.0
+    for row in theme_rows:
+        if not isinstance(row, dict):
+            continue
+        row_key = str(row.get("key") or "").strip()
+        row_label = str(row.get("label") or row_key).strip()
+        if not row_key and not row_label:
+            continue
+
+        row_tokens = set(_priority_tokens(f"{row_label} {row_key.replace('_', ' ')}"))
+        row_refs = {str(v).strip() for v in (row.get("evidence_post_ids") or []) if str(v).strip()}
+        overlap_tokens = len(text_tokens.intersection(row_tokens))
+        overlap_refs = len(evidence_set.intersection(row_refs))
+        score = (overlap_refs * 6.0) + (overlap_tokens * 2.0)
+        score += min(float(row.get("score", 0.0) or 0.0), 220.0) * 0.03
+        score += min(int(row.get("mention_count", 0) or 0), 20) * 0.35
+
+        if score > best_score:
+            best_score = score
+            best = row
+
+    return dict(best) if best and best_score > 0 else None
+
+
+def _extract_top_priorities_from_doc(doc: Dict[str, Any], max_items: int = 4) -> List[Dict[str, Any]]:
+    analysis = doc.get("analysis") if isinstance(doc.get("analysis"), dict) else {}
+    raw_pain = analysis.get("pain_points") if isinstance(analysis, dict) else []
+    if not isinstance(raw_pain, list):
+        return []
+
+    theme_rows = _theme_signal_rows_from_doc(doc)
+    sentiment_label = str(analysis.get("sentiment_label") or "Mixed")
+    buckets: Dict[str, Dict[str, Any]] = {}
+
+    for raw_item in raw_pain[:10]:
+        if isinstance(raw_item, dict):
+            text_value = str(raw_item.get("text") or raw_item.get("summary") or raw_item.get("point") or "").strip()
+            evidence_values = raw_item.get("evidence")
+        else:
+            text_value = str(raw_item or "").strip()
+            evidence_values = []
+
+        if not text_value:
+            continue
+
+        evidence_post_ids: List[str] = []
+        for post_id in _extract_post_ids_from_text(text_value):
+            if post_id and post_id not in evidence_post_ids:
+                evidence_post_ids.append(post_id)
+
+        if isinstance(evidence_values, list):
+            raw_links = evidence_values
+        elif evidence_values:
+            raw_links = [evidence_values]
+        else:
+            raw_links = []
+        for raw_link in raw_links:
+            post_id = _extract_post_id_from_evidence_link(str(raw_link or ""))
+            if post_id and post_id not in evidence_post_ids:
+                evidence_post_ids.append(post_id)
+
+        matched_signal = _match_theme_signal_for_text(text_value, evidence_post_ids, theme_rows)
+        dedupe_key = f"signal:{matched_signal.get('key')}" if matched_signal and matched_signal.get("key") else None
+        if not dedupe_key:
+            normalized_key = _normalize_compare_key(text_value, prefer_prefix=True) or _normalize_compare_key(text_value)
+            dedupe_key = f"pain:{normalized_key or len(buckets)}"
+
+        bucket = buckets.get(dedupe_key)
+        if bucket is None:
+            bucket = {
+                "key": dedupe_key,
+                "texts": [],
+                "evidence_post_ids": [],
+                "pain_cluster_count": 0,
+                "signal": matched_signal,
+            }
+            buckets[dedupe_key] = bucket
+
+        if text_value not in bucket["texts"]:
+            bucket["texts"].append(text_value)
+        for post_id in evidence_post_ids:
+            if post_id not in bucket["evidence_post_ids"]:
+                bucket["evidence_post_ids"].append(post_id)
+        bucket["pain_cluster_count"] = int(bucket.get("pain_cluster_count", 0) or 0) + 1
+
+        current_signal = bucket.get("signal") if isinstance(bucket.get("signal"), dict) else None
+        if matched_signal and (
+            not current_signal
+            or float(matched_signal.get("score", 0.0) or 0.0) > float(current_signal.get("score", 0.0) or 0.0)
+        ):
+            bucket["signal"] = matched_signal
+
+    priorities: List[Dict[str, Any]] = []
+    for bucket in buckets.values():
+        texts = [str(t).strip() for t in (bucket.get("texts") or []) if str(t).strip()]
+        if not texts:
+            continue
+
+        signal = bucket.get("signal") if isinstance(bucket.get("signal"), dict) else {}
+        signal_key = str(signal.get("key") or "").strip()
+        signal_label = str(signal.get("label") or "").strip()
+        signal_kind = str(signal.get("kind") or "").strip()
+        signal_score = round(float(signal.get("score", 0.0) or 0.0), 1)
+        mention_count = int(signal.get("mention_count", 0) or 0)
+        signal_refs = [str(v).strip() for v in (signal.get("evidence_post_ids") or []) if str(v).strip()]
+
+        all_post_ids: List[str] = []
+        for post_id in list(bucket.get("evidence_post_ids") or []) + signal_refs:
+            clean_id = str(post_id or "").strip()
+            if clean_id and clean_id not in all_post_ids:
+                all_post_ids.append(clean_id)
+
+        evidence_links = [link for link in (_post_permalink(post_id) for post_id in all_post_ids) if link]
+        evidence_threads = len(all_post_ids)
+        pain_cluster_count = int(bucket.get("pain_cluster_count", 0) or 0)
+
+        profile = _priority_profile_for_signal(signal_key, texts[0])
+        severity = _severity_from_priority_metrics(signal_score, mention_count, evidence_threads, pain_cluster_count, sentiment_label)
+        confidence = _confidence_from_priority_metrics(signal_score, mention_count, evidence_threads, pain_cluster_count)
+
+        title = signal_label or _priority_title_from_text(texts[0])
+        why_sentence = _priority_first_sentence(texts[0]) or texts[0]
+        if pain_cluster_count > 1:
+            why_sentence = f"{why_sentence} Repeated across {pain_cluster_count} pain-point clusters in this scan."
+
+        recommendation = str(profile.get("suggestion") or "Validate the issue with telemetry and ship a targeted test/fix.")
+        if severity == "High":
+            recommendation = "Immediate: " + recommendation
+        elif severity == "Medium":
+            recommendation = "Next sprint: " + recommendation
+
+        priority_score = round((signal_score * 0.7) + (mention_count * 4.0) + (evidence_threads * 8.0) + (pain_cluster_count * 6.0), 1)
+
+        priorities.append({
+            "title": title[:140],
+            "category": str(profile.get("category") or "Player Experience"),
+            "priority_type": "Risk Mitigation",
+            "severity": severity,
+            "confidence": confidence,
+            "why_it_matters": why_sentence[:420],
+            "impact_summary": str(profile.get("impact") or "Player feedback indicates a meaningful experience risk."),
+            "suggestion": recommendation[:520],
+            "evidence": evidence_links[:4],
+            "evidence_threads": evidence_threads,
+            "multi_thread_evidence": evidence_threads >= 2,
+            "supporting_points": texts[:2],
+            "metrics": {
+                "signal_score": signal_score,
+                "mention_count": mention_count,
+                "pain_cluster_count": pain_cluster_count,
+            },
+            "signal_key": signal_key,
+            "signal_kind": signal_kind,
+            "priority_score": priority_score,
+        })
+
+    priorities.sort(
+        key=lambda item: (
+            {"High": 3, "Medium": 2, "Low": 1}.get(str(item.get("severity") or ""), 0),
+            float(item.get("priority_score", 0.0) or 0.0),
+            int(item.get("evidence_threads", 0) or 0),
+        ),
+        reverse=True,
+    )
+
+    # Remove accidental duplicates by title after sorting.
+    deduped: List[Dict[str, Any]] = []
+    seen_titles = set()
+    for item in priorities:
+        title_key = str(item.get("title") or "").strip().lower()
+        if not title_key or title_key in seen_titles:
+            continue
+        seen_titles.add(title_key)
+        row = dict(item)
+        row.pop("priority_score", None)
+        deduped.append(row)
+        if len(deduped) >= max(max_items, 1):
+            break
+
+    return deduped
+
+
+def _analysis_with_top_priorities(doc: Dict[str, Any]) -> Dict[str, Any]:
+    analysis = doc.get("analysis") if isinstance(doc.get("analysis"), dict) else {}
+    if not isinstance(analysis, dict):
+        return {}
+
+    existing = analysis.get("top_priorities")
+    if isinstance(existing, list) and existing:
+        return analysis
+
+    enriched = dict(analysis)
+    enriched["top_priorities"] = _extract_top_priorities_from_doc(doc)
+    return enriched
+
+
 def _format_theme_signal_change_row(signal: Dict[str, Any], other: Optional[Dict[str, Any]] = None) -> str:
     label = str(signal.get("label") or signal.get("key") or "Theme").strip()
     score = round(float(signal.get("score", 0.0) or 0.0), 1)
@@ -789,6 +1180,8 @@ async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depen
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Multi scan failed: {exc}")
 
+    overall_response = result.get("overall") if isinstance(result.get("overall"), dict) else {}
+
     game_id = str(payload.game_id or "").strip()
     if game_id:
         game = await database.db.tracked_games.find_one({"_id": game_id, "user_id": user["user_id"]})
@@ -797,7 +1190,14 @@ async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depen
 
         multi_posts = _safe_list(result.get("_posts"))
         multi_comments = _safe_list(result.get("_comments"))
-        overall_analysis = result.get("overall") if isinstance(result.get("overall"), dict) else {}
+        overall_analysis_raw = result.get("overall") if isinstance(result.get("overall"), dict) else {}
+        multi_theme_signals = _extract_theme_signals(multi_posts, multi_comments, overall_analysis_raw)
+        overall_analysis = _analysis_with_top_priorities({
+            "analysis": overall_analysis_raw,
+            "posts": multi_posts,
+            "comments": multi_comments,
+            "theme_signals": multi_theme_signals,
+        })
 
         scan_doc = {
             "_id": str(uuid.uuid4()),
@@ -810,12 +1210,13 @@ async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depen
             "scan_type": "multi",
             "subreddit_breakdown": result.get("subreddit_breakdown") or {"breakdown": []},
             "meta": result.get("meta") or {},
-            "theme_signals": _extract_theme_signals(multi_posts, multi_comments, overall_analysis),
+            "theme_signals": multi_theme_signals,
         }
         await database.db.scan_results.insert_one(scan_doc)
+        overall_response = overall_analysis
 
     return {
-        "overall": result.get("overall") or {},
+        "overall": overall_response or {},
         "meta": result.get("meta") or {},
         "subreddit_breakdown": result.get("subreddit_breakdown") or {"breakdown": []},
     }
@@ -863,6 +1264,14 @@ async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
 
+    theme_signals = _extract_theme_signals(posts, comments, analysis)
+    analysis = _analysis_with_top_priorities({
+        "analysis": analysis,
+        "posts": posts,
+        "comments": comments,
+        "theme_signals": theme_signals,
+    })
+
     result = {
         "_id": str(uuid.uuid4()),
         "game_id": id,
@@ -872,7 +1281,7 @@ async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
         "comments": comments,
         "analysis": analysis,
         "scan_type": "single",
-        "theme_signals": _extract_theme_signals(posts, comments, analysis),
+        "theme_signals": theme_signals,
     }
 
     await database.db.scan_results.insert_one(result)
