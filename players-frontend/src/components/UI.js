@@ -15,7 +15,7 @@ export function GhostButton({ className = '', children, ...props }) {
   return (
     <button
       {...props}
-      className={`px-4 py-2 border border-white/15 text-zinc-300 hover:text-white hover:border-white/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
+      className={`btn-ghost px-4 py-2 text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
     >
       {children}
     </button>
@@ -25,21 +25,25 @@ export function GhostButton({ className = '', children, ...props }) {
 export function Tag({ children, tone = 'neutral' }) {
   const toneClass =
     tone === 'success'
-      ? 'text-[#7CFF9A] border-[#7CFF9A]/20 bg-[#7CFF9A]/5'
+      ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
       : tone === 'warning'
-      ? 'text-[#FCEE0A] border-[#FCEE0A]/20 bg-[#FCEE0A]/5'
+      ? 'text-amber-700 border-amber-200 bg-amber-50'
       : tone === 'danger'
-      ? 'text-[#FF4569] border-[#FF4569]/20 bg-[#FF4569]/5'
-      : 'text-zinc-300 border-white/10 bg-white/[0.03]';
+      ? 'text-rose-700 border-rose-200 bg-rose-50'
+      : 'text-slate-700 border-slate-200 bg-white/80';
 
-  return <span className={`inline-flex px-2 py-1 text-xs border ${toneClass}`}>{children}</span>;
+  return (
+    <span className={`inline-flex items-center px-2.5 py-1 text-xs font-semibold rounded-full border ${toneClass}`}>
+      {children}
+    </span>
+  );
 }
 
 export function ProgressBar({ value = 0 }) {
   const pct = Math.max(0, Math.min(100, Number(value || 0) || 0));
   return (
-    <div className="w-full h-2 bg-black/40 border border-white/10 overflow-hidden">
-      <div className="h-full bg-gradient-to-r from-[#00E5FF] to-[#D3F34B]" style={{ width: `${pct}%` }} />
+    <div className="progress-track" aria-hidden="true">
+      <div className="progress-fill" style={{ width: `${pct}%` }} />
     </div>
   );
 }

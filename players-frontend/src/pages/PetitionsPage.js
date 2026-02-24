@@ -76,15 +76,18 @@ export default function PetitionsPage({ mineOnly = false }) {
   if (mineOnly && !user) return <Navigate to="/login" replace />;
 
   return (
-    <main className="max-w-7xl mx-auto px-4 md:px-8 py-8">
+    <main className="page-shell">
       <section className="card-glass p-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="font-heading text-4xl font-black">{mineOnly ? 'My Petitions' : 'Community Petitions'}</h1>
-            <p className="mt-2 text-zinc-400 text-sm">
+            <p className="section-eyebrow">{mineOnly ? 'Your activity' : 'Community petitions'}</p>
+            <h1 className="panel-title text-3xl md:text-4xl font-bold mt-2">
+              {mineOnly ? 'My Petitions' : 'Browse player requests'}
+            </h1>
+            <p className="mt-2 text-slate-500 text-sm max-w-2xl">
               {mineOnly
-                ? 'Track the petitions you have created and share them with other players.'
-                : 'Browse, support, and share player-driven change requests by game and topic.'}
+                ? 'Track the petitions you created, keep sharing them, and watch milestone progress.'
+                : 'Find petitions by game and topic, support the ones you agree with, and help good requests gain momentum.'}
             </p>
           </div>
           <Link to="/petitions/new" className="btn-primary px-4 py-2 text-sm"><span>Create Petition</span></Link>
@@ -95,18 +98,18 @@ export default function PetitionsPage({ mineOnly = false }) {
             <input
               value={q}
               onChange={(e) => updateParam('q', e.target.value)}
-              placeholder="Search petitions, games, or topics"
-              className="w-full bg-black/30 border border-white/10 px-3 py-3 text-zinc-100 placeholder:text-zinc-500"
+              placeholder="Search by game, request, or keyword"
+              className="field-input"
             />
-            <select value={category} onChange={(e) => updateParam('category', e.target.value)} className="bg-black/30 border border-white/10 px-3 py-3 text-zinc-100">
+            <select value={category} onChange={(e) => updateParam('category', e.target.value)} className="field-select">
               <option value="">All categories</option>
               {toArray(metadata.categories).map((item) => (
                 <option key={item} value={item}>{String(item).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase())}</option>
               ))}
             </select>
-            <select value={sort} onChange={(e) => updateParam('sort', e.target.value)} className="bg-black/30 border border-white/10 px-3 py-3 text-zinc-100">
-              <option value="momentum">Momentum</option>
-              <option value="top">Top supporters</option>
+            <select value={sort} onChange={(e) => updateParam('sort', e.target.value)} className="field-select">
+              <option value="momentum">Most momentum</option>
+              <option value="top">Most supporters</option>
               <option value="new">Newest</option>
             </select>
           </div>
@@ -115,11 +118,11 @@ export default function PetitionsPage({ mineOnly = false }) {
 
       <section className="mt-6">
         {loading ? (
-          <div className="card-glass p-6 text-zinc-400">Loading petitions...</div>
+          <div className="card-glass p-6 text-slate-500">Loading petitions...</div>
         ) : error ? (
-          <div className="card-glass p-6 text-amber-300">{error}</div>
+          <div className="card-glass p-6 text-amber-700">{error}</div>
         ) : items.length === 0 ? (
-          <div className="card-glass p-6 text-zinc-400">No petitions found yet.</div>
+          <div className="card-glass p-6 text-slate-500">No petitions found yet.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {items.map((item) => <PetitionCard key={item.id || item.slug} petition={item} />)}
@@ -130,7 +133,7 @@ export default function PetitionsPage({ mineOnly = false }) {
       {!mineOnly && totalPages > 1 ? (
         <div className="mt-6 flex items-center justify-between gap-3">
           <GhostButton disabled={page <= 1} onClick={() => updateParam('page', String(page - 1))}>Previous</GhostButton>
-          <span className="text-sm text-zinc-400">Page {page} / {totalPages}</span>
+          <span className="text-sm text-slate-500">Page {page} / {totalPages}</span>
           <GhostButton disabled={page >= totalPages} onClick={() => updateParam('page', String(page + 1))}>Next</GhostButton>
         </div>
       ) : null}

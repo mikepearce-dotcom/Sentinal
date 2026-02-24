@@ -9,10 +9,18 @@ import LandingPage from './pages/LandingPage';
 import PetitionDetailPage from './pages/PetitionDetailPage';
 import PetitionsPage from './pages/PetitionsPage';
 
+function AuthLoadingState() {
+  return (
+    <div className="page-shell max-w-3xl py-12">
+      <div className="card-glass p-6 text-slate-500">Authenticating…</div>
+    </div>
+  );
+}
+
 function RequireAuth({ children }) {
   const { user, authLoading } = useAuth();
   if (authLoading) {
-    return <div className="min-h-screen flex items-center justify-center text-zinc-400">Authenticating…</div>;
+    return <AuthLoadingState />;
   }
   return user ? children : <Navigate to="/login" replace />;
 }
@@ -21,7 +29,7 @@ function AppRoutes() {
   const { authLoading } = useAuth();
 
   if (authLoading) {
-    return <div className="min-h-screen flex items-center justify-center text-zinc-400">Authenticating…</div>;
+    return <AuthLoadingState />;
   }
 
   return (
