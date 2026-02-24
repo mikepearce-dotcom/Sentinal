@@ -42,6 +42,22 @@ def _normalize_auth0_audience(value: Optional[str]) -> str:
 AUTH0_DOMAIN = _normalize_auth0_domain(os.getenv("AUTH0_DOMAIN"))
 AUTH0_AUDIENCE = _normalize_auth0_audience(os.getenv("AUTH0_AUDIENCE"))
 AUTH0_CLIENT_ID = clean_env(os.getenv("AUTH0_CLIENT_ID"))
+
+
+def _parse_auth0_client_ids() -> List[str]:
+    raw = clean_env(os.getenv("AUTH0_CLIENT_IDS"))
+    values: List[str] = []
+    if raw:
+        for item in raw.split(","):
+            cleaned = clean_env(item)
+            if cleaned and cleaned not in values:
+                values.append(cleaned)
+    if AUTH0_CLIENT_ID and AUTH0_CLIENT_ID not in values:
+        values.append(AUTH0_CLIENT_ID)
+    return values
+
+
+AUTH0_ALLOWED_CLIENT_IDS = _parse_auth0_client_ids()
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/" if AUTH0_DOMAIN else ""
 AUTH0_JWKS_URL = f"{AUTH0_ISSUER}.well-known/jwks.json" if AUTH0_ISSUER else ""
 AUTH0_USERINFO_URL = f"{AUTH0_ISSUER}userinfo" if AUTH0_ISSUER else ""
@@ -96,7 +112,7 @@ def _legacy_auth_enabled() -> bool:
 if _auth0_enabled():
     print(
         "Auth mode: auth0 "
-        f"(domain={AUTH0_DOMAIN}, audience={AUTH0_AUDIENCE}, client_id={'set' if AUTH0_CLIENT_ID else 'unset'})"
+        f"(domain={AUTH0_DOMAIN}, audience={AUTH0_AUDIENCE}, client_ids={len(AUTH0_ALLOWED_CLIENT_IDS) or 0})"
     )
 elif _legacy_auth_enabled():
     print("Auth mode: legacy JWT")
@@ -225,10 +241,10 @@ def _decode_auth0_access_token(token: str) -> Dict[str, Any]:
             issuer=AUTH0_ISSUER,
         )
 
-        if AUTH0_CLIENT_ID:
+        if AUTH0_ALLOWED_CLIENT_IDS:
             azp = _first_non_empty(decoded.get("azp"), decoded.get("client_id"))
-            if azp != AUTH0_CLIENT_ID:
-                raise jwt.InvalidTokenError("Token authorized party does not match expected client")
+            if azp and azp not in AUTH0_ALLOWED_CLIENT_IDS:
+                raise jwt.InvalidTokenError("Token authorized party does not match an allowed client")
 
         return decoded
     except Exception as exc:

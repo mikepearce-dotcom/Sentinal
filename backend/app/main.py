@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request, Response
 
 from .database import close_mongo_connection, connect_to_mongo
-from .routes import auth, games, scans
+from .routes import auth, community, games, scans
 
 app = FastAPI(title="Sentient Tracker API")
 
@@ -104,3 +104,4 @@ app.add_event_handler("shutdown", close_mongo_connection)
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(games.router, prefix="/api/games", tags=["games"])
 app.include_router(scans.router, prefix="/api/games", tags=["scans"])
+app.include_router(community.router, prefix="/api/community", tags=["community"])
