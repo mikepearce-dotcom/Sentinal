@@ -7,6 +7,7 @@ export default function AppFrame({ children }) {
   const { user, logout } = useAuth();
   const location = useLocation();
   const isPetitions = location.pathname.startsWith('/petitions');
+  const isAccount = location.pathname.startsWith('/account');
 
   return (
     <div className="community-shell">
@@ -34,6 +35,7 @@ export default function AppFrame({ children }) {
               <>
                 <Link to="/petitions/new" className="header-nav-link">Create</Link>
                 <Link to="/petitions/mine" className="header-nav-link">My Petitions</Link>
+                <Link to="/account" className={`header-nav-link ${isAccount ? 'header-nav-link-active' : ''}`}>Account</Link>
                 <div className="hidden md:flex header-user-pill max-w-[15rem]">
                   {user.avatar_url ? (
                     <img src={user.avatar_url} alt={user.name || 'User'} className="w-7 h-7 rounded-full object-cover" />

@@ -1,3 +1,5 @@
+import base64
+import binascii
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -165,16 +167,47 @@ def _sanitize_profile_name(value: Any) -> str:
     return normalized[:80]
 
 
+MAX_AVATAR_REMOTE_URL_LENGTH = 600
+MAX_AVATAR_DATA_URL_LENGTH = 420_000  # ~300KB binary once base64-decoded
+_ALLOWED_AVATAR_DATA_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+
 def _sanitize_avatar_url(value: Any) -> str:
     normalized = str(value or "").strip()
     if not normalized:
         return ""
 
+    if normalized.startswith("data:"):
+        if len(normalized) > MAX_AVATAR_DATA_URL_LENGTH:
+            return ""
+
+        header, sep, payload = normalized.partition(",")
+        if not sep or not payload:
+            return ""
+
+        header_lower = header.lower()
+        if not header_lower.startswith("data:") or ";base64" not in header_lower:
+            return ""
+
+        mime_type = header_lower[5:].split(";", 1)[0].strip()
+        if mime_type not in _ALLOWED_AVATAR_DATA_MIME_TYPES:
+            return ""
+
+        try:
+            decoded = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError):
+            return ""
+
+        if not decoded or len(decoded) > 300_000:
+            return ""
+
+        return normalized
+
     parsed = urlsplit(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return ""
 
-    return normalized[:600]
+    return normalized[:MAX_AVATAR_REMOTE_URL_LENGTH]
 
 
 def _effective_avatar_url(user: Dict[str, Any]) -> str:

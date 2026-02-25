@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-d
 import AppFrame from './components/AppFrame';
 import { AuthProvider } from './context/AuthContext';
 import { useAuth } from './hooks/useAuth';
+import AccountPage from './pages/AccountPage';
 import AuthActionPage from './pages/AuthActionPage';
 import CreatePetitionPage from './pages/CreatePetitionPage';
 import LandingPage from './pages/LandingPage';
@@ -39,6 +40,7 @@ function AppRoutes() {
       <Route path="/petitions/mine" element={<PetitionsPage mineOnly />} />
       <Route path="/petitions/new" element={<RequireAuth><CreatePetitionPage /></RequireAuth>} />
       <Route path="/petitions/:slug" element={<PetitionDetailPage />} />
+      <Route path="/account" element={<RequireAuth><AccountPage /></RequireAuth>} />
       <Route path="/login" element={<AuthActionPage mode="login" />} />
       <Route path="/signup" element={<AuthActionPage mode="signup" />} />
       <Route path="*" element={<Navigate to="/" replace />} />
