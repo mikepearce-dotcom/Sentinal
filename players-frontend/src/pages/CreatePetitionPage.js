@@ -5,6 +5,11 @@ import { GameBadge, PrimaryButton, Tag } from '../components/UI';
 import { formatNumber, prettyLabel, toArray } from '../lib/community';
 import { useAuth } from '../hooks/useAuth';
 
+const TITLE_MIN = 8;
+const SUMMARY_MIN = 12;
+const BODY_MIN = 30;
+const GAME_NAME_MIN = 2;
+
 export default function CreatePetitionPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -21,6 +26,7 @@ export default function CreatePetitionPage() {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [touched, setTouched] = useState({ game: false, title: false, summary: false, body: false });
 
   useEffect(() => {
     if (!user) return;
@@ -64,16 +70,34 @@ export default function CreatePetitionPage() {
   if (!user) return <Navigate to="/login" replace />;
 
   const typedGameName = String(gameQuery || '').trim();
-  const manualGameAllowed = !selectedGame && typedGameName.length >= 2;
+  const selectedGameName = String(selectedGame?.name || '').trim();
+  const submitGameName = selectedGameName || typedGameName;
+  const manualGameAllowed = !selectedGame && typedGameName.length >= GAME_NAME_MIN;
+
+  const validation = {
+    game: submitGameName.length >= GAME_NAME_MIN ? '' : `Enter or select a game name (${GAME_NAME_MIN}+ characters).`,
+    title: form.title.trim().length >= TITLE_MIN ? '' : `Title must be at least ${TITLE_MIN} characters.`,
+    summary: form.summary.trim().length >= SUMMARY_MIN ? '' : `Summary must be at least ${SUMMARY_MIN} characters.`,
+    body: form.body.trim().length >= BODY_MIN ? '' : `Detailed request must be at least ${BODY_MIN} characters.`,
+  };
+
+  const hasValidationErrors = Object.values(validation).some(Boolean);
+  const showFieldError = (field) => Boolean(touched[field] && validation[field]);
 
   const onSubmit = async (e) => {
     e.preventDefault();
-    setSaving(true);
+    setTouched({ game: true, title: true, summary: true, body: true });
     setError('');
+    if (hasValidationErrors) {
+      setError('Please fix the highlighted fields before publishing.');
+      return;
+    }
+
+    setSaving(true);
     try {
       const payload = {
         game_id: selectedGame?.id || '',
-        game_name: selectedGame?.name || gameQuery,
+        game_name: submitGameName,
         title: form.title,
         summary: form.summary,
         body: form.body,
@@ -85,7 +109,14 @@ export default function CreatePetitionPage() {
       navigate(slug ? `/petitions/${slug}` : '/petitions');
     } catch (err) {
       const detail = err?.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : 'Failed to create petition.');
+      if (Array.isArray(detail) && detail.length > 0) {
+        const first = detail[0] || {};
+        const fieldName = Array.isArray(first?.loc) ? String(first.loc[first.loc.length - 1] || '') : '';
+        const message = String(first?.msg || 'Validation error');
+        setError(fieldName ? `${fieldName}: ${message}` : message);
+      } else {
+        setError(typeof detail === 'string' ? detail : 'Failed to create petition.');
+      }
     } finally {
       setSaving(false);
     }
@@ -109,12 +140,14 @@ export default function CreatePetitionPage() {
                 setSelectedGame(null);
                 setGameQuery(e.target.value);
               }}
+              onBlur={() => setTouched((prev) => ({ ...prev, game: true }))}
               placeholder="Search a game (we check your studio catalog + IGDB)"
-              className="field-input"
+              className={`field-input ${showFieldError('game') ? 'border-rose-300 bg-rose-50/50' : ''}`}
             />
             <p className="mt-2 text-xs text-slate-500">
               We suggest games from your tracked catalog first, then IGDB to reduce typos. If your game is not listed, you can still use the name you typed.
             </p>
+            {showFieldError('game') ? <p className="mt-2 text-xs text-rose-700">{validation.game}</p> : null}
 
             {selectedGame ? (
               <div className="mt-2 flex items-center gap-2 text-xs text-slate-500 flex-wrap">
@@ -190,41 +223,59 @@ export default function CreatePetitionPage() {
           </div>
 
           <div>
-            <label className="field-label">Petition title</label>
+            <div className="flex items-center justify-between gap-3">
+              <label className="field-label mb-0">Petition title</label>
+              <span className="text-xs text-slate-500">{form.title.length}/160</span>
+            </div>
             <input
               value={form.title}
               onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
+              onBlur={() => setTouched((prev) => ({ ...prev, title: true }))}
               maxLength={160}
               placeholder="Example: Add a PvE-only queue for solo players"
-              className="field-input"
+              className={`field-input ${showFieldError('title') ? 'border-rose-300 bg-rose-50/50' : ''}`}
             />
+            {showFieldError('title') ? <p className="mt-2 text-xs text-rose-700">{validation.title}</p> : <p className="mt-2 text-xs text-slate-500">Be specific and focus on one change request.</p>}
           </div>
 
           <div>
-            <label className="field-label">Short summary</label>
+            <div className="flex items-center justify-between gap-3">
+              <label className="field-label mb-0">Short summary</label>
+              <span className="text-xs text-slate-500">{form.summary.length}/300</span>
+            </div>
             <textarea
               value={form.summary}
               onChange={(e) => setForm((p) => ({ ...p, summary: e.target.value }))}
+              onBlur={() => setTouched((prev) => ({ ...prev, summary: true }))}
               rows={3}
               maxLength={300}
               placeholder="What change are you asking for, and why should players support it?"
-              className="field-textarea"
+              className={`field-textarea ${showFieldError('summary') ? 'border-rose-300 bg-rose-50/50' : ''}`}
             />
+            {showFieldError('summary') ? <p className="mt-2 text-xs text-rose-700">{validation.summary}</p> : <p className="mt-2 text-xs text-slate-500">Give players a quick reason to support this request.</p>}
           </div>
 
           <div>
-            <label className="field-label">Detailed request</label>
+            <div className="flex items-center justify-between gap-3">
+              <label className="field-label mb-0">Detailed request</label>
+              <span className="text-xs text-slate-500">{form.body.length}/8000</span>
+            </div>
             <textarea
               value={form.body}
               onChange={(e) => setForm((p) => ({ ...p, body: e.target.value }))}
+              onBlur={() => setTouched((prev) => ({ ...prev, body: true }))}
               rows={10}
               maxLength={8000}
               placeholder="Describe the current problem, who it affects, what should change, and what good looks like after the update."
-              className="field-textarea"
+              className={`field-textarea ${showFieldError('body') ? 'border-rose-300 bg-rose-50/50' : ''}`}
             />
-            <p className="mt-2 text-xs text-slate-500">
-              Tip: include examples players will recognize and avoid bundling multiple unrelated requests into one petition.
-            </p>
+            {showFieldError('body') ? (
+              <p className="mt-2 text-xs text-rose-700">{validation.body}</p>
+            ) : (
+              <p className="mt-2 text-xs text-slate-500">
+                Tip: include examples players will recognize and avoid bundling multiple unrelated requests into one petition.
+              </p>
+            )}
           </div>
 
           {error ? <p className="text-sm text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">{error}</p> : null}
