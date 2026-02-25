@@ -29,7 +29,9 @@ IGDB_LOGO_IMAGE_SIZE = str(os.getenv("IGDB_LOGO_IMAGE_SIZE") or "cover_small").s
 
 _igdb_token_cache: Dict[str, Any] = {"access_token": "", "expires_at": 0.0}
 _igdb_logo_search_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_igdb_game_suggest_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _igdb_token_lock = asyncio.Lock()
+IGDB_SUGGEST_CACHE_TTL_SECONDS = 10 * 60
 
 DEFAULT_PETITION_MILESTONES = [100, 500, 1000, 5000]
 PETITION_CATEGORIES = [
@@ -387,6 +389,120 @@ async def _igdb_search_game_logo(game_name: str) -> Dict[str, Any]:
     }
     _igdb_logo_cache_set(cache_key, payload)
     return payload
+
+
+def _igdb_suggest_cache_get(query_text: str) -> Optional[List[Dict[str, Any]]]:
+    cache_key = _normalize_key(query_text)
+    if not cache_key:
+        return None
+    cached = _igdb_game_suggest_cache.get(cache_key)
+    if not cached:
+        return None
+    expires_at, rows = cached
+    if float(expires_at or 0.0) <= time.time():
+        _igdb_game_suggest_cache.pop(cache_key, None)
+        return None
+    return [dict(item) for item in (rows or []) if isinstance(item, dict)]
+
+
+def _igdb_suggest_cache_set(query_text: str, rows: List[Dict[str, Any]]) -> None:
+    cache_key = _normalize_key(query_text)
+    if not cache_key:
+        return
+    safe_rows = [dict(item) for item in rows if isinstance(item, dict)]
+    _igdb_game_suggest_cache[cache_key] = (time.time() + IGDB_SUGGEST_CACHE_TTL_SECONDS, safe_rows)
+
+
+async def _igdb_search_game_suggestions(query_text: str, limit: int = 8) -> List[Dict[str, Any]]:
+    clean_query = _safe_str(query_text, 120)
+    safe_limit = max(1, min(int(limit or 8), 20))
+    if len(clean_query) < 2 or not _igdb_enabled():
+        return []
+
+    cached = _igdb_suggest_cache_get(clean_query)
+    if cached is not None:
+        return cached[:safe_limit]
+
+    token = await _igdb_get_access_token()
+    if not token:
+        return []
+
+    escaped = clean_query.replace('\\', '\\\\').replace('"', '\\"')
+    query = (
+        f'search "{escaped}"; '
+        'fields id,name,slug,first_release_date,cover.image_id; '
+        f'limit {max(8, safe_limit * 2)};'
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=IGDB_REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://api.igdb.com/v4/games",
+                content=query,
+                headers={
+                    "Client-ID": IGDB_TWITCH_CLIENT_ID,
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "Content-Type": "text/plain",
+                },
+            )
+    except Exception as exc:
+        print(f"IGDB game suggestions failed ({clean_query}): {exc}")
+        return []
+
+    if resp.status_code != 200:
+        excerpt = _safe_str(resp.text, 240)
+        print(f"IGDB game suggestions failed ({clean_query}) HTTP {resp.status_code}: {excerpt}")
+        return []
+
+    try:
+        raw_rows = resp.json()
+    except Exception:
+        print(f"IGDB game suggestions invalid JSON ({clean_query})")
+        return []
+
+    if not isinstance(raw_rows, list):
+        _igdb_suggest_cache_set(clean_query, [])
+        return []
+
+    scored: List[Tuple[float, Dict[str, Any]]] = []
+    seen = set()
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        name = _safe_str(row.get("name"), 140)
+        key = _normalize_key(name)
+        if not name or not key or key in seen:
+            continue
+
+        score = _igdb_candidate_score(clean_query, row)
+        cover = row.get("cover") if isinstance(row.get("cover"), dict) else {}
+        image_id = _safe_str(cover.get("image_id"), 80)
+        if image_id:
+            score += 4.0
+        if score < 10.0:
+            continue
+
+        seen.add(key)
+        scored.append(
+            (
+                score,
+                {
+                    "id": "",
+                    "slug": _slugify(name),
+                    "name": name,
+                    "petition_count": 0,
+                    "logo_url": _igdb_image_url(image_id) if image_id else "",
+                    "source": "igdb",
+                    "igdb_game_id": _safe_str(row.get("id"), 40),
+                },
+            )
+        )
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    rows = [item for _, item in scored[:safe_limit]]
+    _igdb_suggest_cache_set(clean_query, rows)
+    return rows
 
 
 async def _ensure_community_game_logo(game_doc: Dict[str, Any], persist: bool = True) -> Dict[str, Any]:
@@ -780,6 +896,32 @@ async def search_community_games(
                 continue
             seen_names.add(key)
             results.append(CommunityGameOut(id="", slug=_slugify(name), name=name, petition_count=0, logo_url="", source="suggested"))
+
+    if query_text and len(results) < limit and _igdb_enabled():
+        try:
+            igdb_rows = await _igdb_search_game_suggestions(query_text, limit=(limit - len(results)))
+        except Exception as exc:
+            print(f"IGDB suggestion lookup failed ({query_text}): {exc}")
+            igdb_rows = []
+
+        for row in igdb_rows:
+            name = _safe_str(row.get("name"), 120)
+            key = _normalize_key(name)
+            if not name or not key or key in seen_names:
+                continue
+            seen_names.add(key)
+            results.append(
+                CommunityGameOut(
+                    id="",
+                    slug=_safe_str(row.get("slug"), 90) or _slugify(name),
+                    name=name,
+                    petition_count=0,
+                    logo_url=_safe_str(row.get("logo_url"), 600),
+                    source="igdb",
+                )
+            )
+            if len(results) >= limit:
+                break
 
     return results[:limit]
 

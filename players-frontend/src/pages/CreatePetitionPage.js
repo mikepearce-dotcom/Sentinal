@@ -63,6 +63,9 @@ export default function CreatePetitionPage() {
 
   if (!user) return <Navigate to="/login" replace />;
 
+  const typedGameName = String(gameQuery || '').trim();
+  const manualGameAllowed = !selectedGame && typedGameName.length >= 2;
+
   const onSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -106,9 +109,12 @@ export default function CreatePetitionPage() {
                 setSelectedGame(null);
                 setGameQuery(e.target.value);
               }}
-              placeholder="Search or type a game name"
+              placeholder="Search a game (we check your studio catalog + IGDB)"
               className="field-input"
             />
+            <p className="mt-2 text-xs text-slate-500">
+              We suggest games from your tracked catalog first, then IGDB to reduce typos. If your game is not listed, you can still use the name you typed.
+            </p>
 
             {selectedGame ? (
               <div className="mt-2 flex items-center gap-2 text-xs text-slate-500 flex-wrap">
@@ -118,6 +124,25 @@ export default function CreatePetitionPage() {
                   <span className="text-slate-700 font-medium">{selectedGame.name}</span>
                 </div>
                 <button type="button" className="copy-link text-xs" onClick={() => setSelectedGame(null)}>Clear</button>
+              </div>
+            ) : null}
+
+            {manualGameAllowed ? (
+              <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 bg-white/70 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-700">Can't find the game?</p>
+                  <p className="text-xs text-slate-500 truncate">Use your typed name and create it manually: "{typedGameName}"</p>
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost px-3 py-1.5 text-xs font-semibold shrink-0"
+                  onClick={() => {
+                    setSelectedGame({ id: '', slug: '', name: typedGameName, logo_url: '', source: 'manual' });
+                    setGameSuggestions([]);
+                  }}
+                >
+                  Use typed name
+                </button>
               </div>
             ) : null}
 
@@ -140,7 +165,7 @@ export default function CreatePetitionPage() {
                         <span className="text-sm text-slate-900 truncate">{game.name}</span>
                       </div>
                       <span className="text-xs text-slate-500 shrink-0">
-                        {game.source === 'catalog' ? `${formatNumber(game.petition_count)} petitions` : 'Suggested'}
+                        {game.source === 'catalog' ? `${formatNumber(game.petition_count)} petitions` : game.source === 'igdb' ? 'IGDB match' : 'Suggested'}
                       </span>
                     </div>
                   </button>
