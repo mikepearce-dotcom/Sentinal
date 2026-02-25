@@ -47,3 +47,42 @@ export function ProgressBar({ value = 0 }) {
     </div>
   );
 }
+
+function gameInitials(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return 'GM';
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase();
+}
+
+export function GameBadge({ name = '', logoUrl = '', size = 'md', className = '' }) {
+  const [imgFailed, setImgFailed] = React.useState(false);
+  const showImage = Boolean(logoUrl) && !imgFailed;
+
+  const sizeClass =
+    size === 'sm'
+      ? 'h-9 w-9 rounded-lg text-[10px]'
+      : size === 'lg'
+      ? 'h-14 w-14 rounded-xl text-sm'
+      : 'h-11 w-11 rounded-xl text-xs';
+
+  return (
+    <span
+      className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-gradient-to-br from-white to-slate-100 text-slate-700 shadow-sm ${sizeClass} ${className}`.trim()}
+      aria-hidden="true"
+    >
+      {showImage ? (
+        <img
+          src={logoUrl}
+          alt=""
+          className="h-full w-full object-cover"
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+        />
+      ) : null}
+      {!showImage ? (
+        <span className="font-heading font-bold tracking-tight text-slate-700">{gameInitials(name)}</span>
+      ) : null}
+    </span>
+  );
+}

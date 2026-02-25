@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../api/axios';
-import { PrimaryButton, ProgressBar, Tag } from '../components/UI';
+import { GameBadge, PrimaryButton, ProgressBar, Tag } from '../components/UI';
 import { clampPct, formatNumber, formatShortDate, prettyLabel } from '../lib/community';
 import { useAuth } from '../hooks/useAuth';
 
@@ -130,7 +130,13 @@ export default function PetitionDetailPage() {
           <button type="button" onClick={onShare} className="btn-ghost px-3 py-2 text-sm font-semibold">Share</button>
         </div>
 
-        <p className="font-mono text-xs uppercase tracking-[0.18em] text-slate-500 mt-4">{petition.game_name || 'Unknown Game'}</p>
+        <div className="mt-4 flex items-center gap-3">
+          <GameBadge name={petition.game_name} logoUrl={petition.game_logo_url} size="lg" />
+          <div className="min-w-0">
+            <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-slate-500">Game</p>
+            <p className="text-sm md:text-base font-semibold text-slate-800 truncate">{petition.game_name || 'Unknown Game'}</p>
+          </div>
+        </div>
         <h1 className="hero-title text-3xl md:text-5xl leading-tight mt-3">{petition.title}</h1>
         <p className="mt-4 text-base md:text-lg text-slate-700 leading-relaxed">{petition.summary}</p>
 

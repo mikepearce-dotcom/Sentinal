@@ -1,9 +1,12 @@
+import asyncio
 from datetime import datetime, timedelta
 import os
 import re
+import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -16,6 +19,17 @@ router = APIRouter()
 COMMUNITY_CREATE_RATE_LIMIT = parse_int_env(os.getenv("COMMUNITY_CREATE_RATE_LIMIT"), default=15)
 COMMUNITY_SUPPORT_RATE_LIMIT = parse_int_env(os.getenv("COMMUNITY_SUPPORT_RATE_LIMIT"), default=120)
 COMMUNITY_WINDOW_SECONDS = parse_int_env(os.getenv("COMMUNITY_RATE_WINDOW_SECONDS"), default=300)
+
+IGDB_TWITCH_CLIENT_ID = str(os.getenv("IGDB_TWITCH_CLIENT_ID") or "").strip()
+IGDB_TWITCH_CLIENT_SECRET = str(os.getenv("IGDB_TWITCH_CLIENT_SECRET") or "").strip()
+IGDB_REQUEST_TIMEOUT_SECONDS = float(max(5, parse_int_env(os.getenv("IGDB_REQUEST_TIMEOUT_SECONDS"), default=15)))
+IGDB_LOGO_CACHE_TTL_SECONDS = max(300, parse_int_env(os.getenv("IGDB_LOGO_CACHE_TTL_SECONDS"), default=7 * 24 * 60 * 60))
+IGDB_LOGO_RETRY_MISSING_SECONDS = max(300, parse_int_env(os.getenv("IGDB_LOGO_RETRY_MISSING_SECONDS"), default=24 * 60 * 60))
+IGDB_LOGO_IMAGE_SIZE = str(os.getenv("IGDB_LOGO_IMAGE_SIZE") or "cover_small").strip() or "cover_small"
+
+_igdb_token_cache: Dict[str, Any] = {"access_token": "", "expires_at": 0.0}
+_igdb_logo_search_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_igdb_token_lock = asyncio.Lock()
 
 DEFAULT_PETITION_MILESTONES = [100, 500, 1000, 5000]
 PETITION_CATEGORIES = [
@@ -54,6 +68,7 @@ class CommunityGameOut(BaseModel):
     slug: str = ""
     name: str
     petition_count: int = 0
+    logo_url: str = ""
     source: str = "catalog"
 
 
@@ -78,6 +93,7 @@ class CommunityPetitionOut(BaseModel):
     summary: str = ""
     game_id: str = ""
     game_name: str = ""
+    game_logo_url: str = ""
     category: str = "other"
     change_type: str = "other"
     status: str = "published"
@@ -155,6 +171,315 @@ def _slugify(value: str, fallback: str = "item") -> str:
     return (base or fallback)[:90].strip("-") or fallback
 
 
+def _igdb_enabled() -> bool:
+    return bool(IGDB_TWITCH_CLIENT_ID and IGDB_TWITCH_CLIENT_SECRET)
+
+
+def _igdb_cache_key(game_name: str) -> str:
+    return _normalize_key(game_name)
+
+
+def _igdb_logo_cache_get(cache_key: str) -> Optional[Dict[str, Any]]:
+    if not cache_key:
+        return None
+    cached = _igdb_logo_search_cache.get(cache_key)
+    if not cached:
+        return None
+    expires_at, payload = cached
+    if float(expires_at or 0.0) <= time.time():
+        _igdb_logo_search_cache.pop(cache_key, None)
+        return None
+    return dict(payload or {})
+
+
+def _igdb_logo_cache_set(cache_key: str, payload: Dict[str, Any]) -> None:
+    if not cache_key:
+        return
+    safe_payload = dict(payload or {})
+    ttl = IGDB_LOGO_CACHE_TTL_SECONDS if safe_payload.get("logo_url") else IGDB_LOGO_RETRY_MISSING_SECONDS
+    _igdb_logo_search_cache[cache_key] = (time.time() + float(ttl), safe_payload)
+
+
+def _igdb_image_url(image_id: str, size: str = "") -> str:
+    clean_image_id = _safe_str(image_id, 80)
+    if not clean_image_id:
+        return ""
+    size_name = _safe_str(size or IGDB_LOGO_IMAGE_SIZE, 40) or "cover_small"
+    if size_name.startswith("t_"):
+        size_name = size_name[2:]
+    return f"https://images.igdb.com/igdb/image/upload/t_{size_name}/{clean_image_id}.jpg"
+
+
+def _igdb_candidate_score(game_name: str, candidate: Dict[str, Any]) -> float:
+    query = _normalize_key(game_name)
+    candidate_name = _safe_str(candidate.get("name"), 140)
+    candidate_norm = _normalize_key(candidate_name)
+    if not query or not candidate_norm:
+        return -1.0
+
+    score = 0.0
+    if candidate_norm == query:
+        score += 100.0
+    if candidate_norm.startswith(query):
+        score += 25.0
+    if query.startswith(candidate_norm):
+        score += 18.0
+    if query in candidate_norm and candidate_norm != query:
+        score += 20.0
+    if candidate_norm in query and candidate_norm != query:
+        score += 12.0
+
+    query_tokens = set(query.split())
+    candidate_tokens = set(candidate_norm.split())
+    if query_tokens and candidate_tokens:
+        overlap = len(query_tokens.intersection(candidate_tokens))
+        score += (overlap / float(len(query_tokens))) * 30.0
+        score += (overlap / float(len(candidate_tokens))) * 10.0
+
+    cover = candidate.get("cover") if isinstance(candidate.get("cover"), dict) else {}
+    if _safe_str(cover.get("image_id")):
+        score += 8.0
+
+    try:
+        if int(candidate.get("first_release_date") or 0) > 0:
+            score += 1.0
+    except Exception:
+        pass
+
+    return score
+
+
+async def _igdb_get_access_token() -> str:
+    if not _igdb_enabled():
+        return ""
+
+    cached_token = _safe_str(_igdb_token_cache.get("access_token"), 2000)
+    cached_expires_at = float(_igdb_token_cache.get("expires_at") or 0.0)
+    if cached_token and cached_expires_at > (time.time() + 60.0):
+        return cached_token
+
+    async with _igdb_token_lock:
+        cached_token = _safe_str(_igdb_token_cache.get("access_token"), 2000)
+        cached_expires_at = float(_igdb_token_cache.get("expires_at") or 0.0)
+        if cached_token and cached_expires_at > (time.time() + 60.0):
+            return cached_token
+
+        try:
+            async with httpx.AsyncClient(timeout=IGDB_REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
+                resp = await client.post(
+                    "https://id.twitch.tv/oauth2/token",
+                    params={
+                        "client_id": IGDB_TWITCH_CLIENT_ID,
+                        "client_secret": IGDB_TWITCH_CLIENT_SECRET,
+                        "grant_type": "client_credentials",
+                    },
+                    headers={"Accept": "application/json"},
+                )
+        except Exception as exc:
+            print(f"IGDB token request failed: {exc}")
+            return ""
+
+        if resp.status_code != 200:
+            excerpt = _safe_str(resp.text, 240)
+            print(f"IGDB token request failed (HTTP {resp.status_code}): {excerpt}")
+            return ""
+
+        try:
+            payload = resp.json()
+        except Exception:
+            print("IGDB token response was not valid JSON")
+            return ""
+
+        access_token = _safe_str((payload or {}).get("access_token"), 4000)
+        expires_in = int((payload or {}).get("expires_in") or 0)
+        if not access_token:
+            return ""
+
+        _igdb_token_cache["access_token"] = access_token
+        _igdb_token_cache["expires_at"] = time.time() + max(60, expires_in - 60)
+        return access_token
+
+
+async def _igdb_search_game_logo(game_name: str) -> Dict[str, Any]:
+    clean_name = _safe_str(game_name, 120)
+    cache_key = _igdb_cache_key(clean_name)
+    if not clean_name or not cache_key:
+        return {}
+
+    cached = _igdb_logo_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    if not _igdb_enabled():
+        return {}
+
+    token = await _igdb_get_access_token()
+    if not token:
+        return {}
+
+    escaped = clean_name.replace('\\', '\\\\').replace('"', '\\"')
+    query = (
+        f'search "{escaped}"; '
+        'fields id,name,slug,first_release_date,cover.image_id; '
+        'limit 8;'
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=IGDB_REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            resp = await client.post(
+                "https://api.igdb.com/v4/games",
+                content=query,
+                headers={
+                    "Client-ID": IGDB_TWITCH_CLIENT_ID,
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                    "Content-Type": "text/plain",
+                },
+            )
+    except Exception as exc:
+        print(f"IGDB game search failed ({clean_name}): {exc}")
+        return {}
+
+    if resp.status_code != 200:
+        excerpt = _safe_str(resp.text, 240)
+        print(f"IGDB game search failed ({clean_name}) HTTP {resp.status_code}: {excerpt}")
+        return {}
+
+    try:
+        rows = resp.json()
+    except Exception:
+        print(f"IGDB game search invalid JSON ({clean_name})")
+        return {}
+
+    if not isinstance(rows, list):
+        _igdb_logo_cache_set(cache_key, {})
+        return {}
+
+    best: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        score = _igdb_candidate_score(clean_name, row)
+        cover = row.get("cover") if isinstance(row.get("cover"), dict) else {}
+        if not _safe_str(cover.get("image_id")):
+            score -= 6.0
+        if score > best_score:
+            best = row
+            best_score = score
+
+    if not best or best_score < 20.0:
+        _igdb_logo_cache_set(cache_key, {})
+        return {}
+
+    cover = best.get("cover") if isinstance(best.get("cover"), dict) else {}
+    logo_url = _igdb_image_url(_safe_str(cover.get("image_id")))
+    if not logo_url:
+        _igdb_logo_cache_set(cache_key, {})
+        return {}
+
+    payload = {
+        "logo_url": logo_url,
+        "logo_source": "igdb",
+        "igdb_game_id": str(best.get("id") or ""),
+        "igdb_slug": _safe_str(best.get("slug"), 120),
+        "igdb_name": _safe_str(best.get("name"), 140),
+    }
+    _igdb_logo_cache_set(cache_key, payload)
+    return payload
+
+
+async def _ensure_community_game_logo(game_doc: Dict[str, Any], persist: bool = True) -> Dict[str, Any]:
+    if not isinstance(game_doc, dict):
+        return game_doc
+
+    if _safe_str(game_doc.get("logo_url"), 600):
+        return game_doc
+    if not _igdb_enabled():
+        return game_doc
+
+    game_name = _safe_str(game_doc.get("name"), 120)
+    game_id = _safe_str(game_doc.get("_id") or game_doc.get("id"), 64)
+    if not game_name:
+        return game_doc
+
+    status = _safe_str(game_doc.get("logo_status"), 20).lower()
+    last_verified = game_doc.get("logo_last_verified_at")
+    if status == "missing" and isinstance(last_verified, datetime):
+        age_seconds = (datetime.utcnow() - last_verified).total_seconds()
+        if age_seconds < float(IGDB_LOGO_RETRY_MISSING_SECONDS):
+            return game_doc
+
+    resolved = await _igdb_search_game_logo(game_name)
+    now = datetime.utcnow()
+
+    if resolved.get("logo_url"):
+        updates: Dict[str, Any] = {
+            "logo_url": _safe_str(resolved.get("logo_url"), 600),
+            "logo_source": _safe_str(resolved.get("logo_source"), 40) or "igdb",
+            "logo_status": "resolved",
+            "logo_last_verified_at": now,
+            "updated_at": now,
+        }
+        if _safe_str(resolved.get("igdb_game_id"), 40):
+            updates["igdb_game_id"] = _safe_str(resolved.get("igdb_game_id"), 40)
+        if _safe_str(resolved.get("igdb_slug"), 120):
+            updates["igdb_slug"] = _safe_str(resolved.get("igdb_slug"), 120)
+        if _safe_str(resolved.get("igdb_name"), 140):
+            updates["igdb_name"] = _safe_str(resolved.get("igdb_name"), 140)
+
+        merged = dict(game_doc)
+        merged.update(updates)
+        if persist and game_id:
+            await database.db.community_games.update_one({"_id": game_id}, {"$set": updates})
+        return merged
+
+    missing_updates = {
+        "logo_status": "missing",
+        "logo_last_verified_at": now,
+        "updated_at": now,
+    }
+    merged = dict(game_doc)
+    merged.update(missing_updates)
+    if persist and game_id:
+        await database.db.community_games.update_one({"_id": game_id}, {"$set": missing_updates})
+    return merged
+
+
+async def _hydrate_petition_game_logos(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = [doc for doc in docs if isinstance(doc, dict)]
+    if not rows:
+        return rows
+
+    missing_game_ids: List[str] = []
+    for row in rows:
+        if _safe_str(row.get("game_logo_url"), 600):
+            continue
+        game_id = _safe_str(row.get("game_id"), 64)
+        if game_id and game_id not in missing_game_ids:
+            missing_game_ids.append(game_id)
+
+    if not missing_game_ids:
+        return rows
+
+    game_map: Dict[str, Dict[str, Any]] = {}
+    async for game in database.db.community_games.find({"_id": {"$in": missing_game_ids}}):
+        game_doc = dict(game)
+        if not _safe_str(game_doc.get("logo_url"), 600):
+            game_doc = await _ensure_community_game_logo(game_doc, persist=True)
+        game_map[_safe_str(game_doc.get("_id"), 64)] = game_doc
+
+    for row in rows:
+        if _safe_str(row.get("game_logo_url"), 600):
+            continue
+        game_id = _safe_str(row.get("game_id"), 64)
+        logo_url = _safe_str((game_map.get(game_id) or {}).get("logo_url"), 600)
+        if logo_url:
+            row["game_logo_url"] = logo_url
+
+    return rows
+
+
 async def _unique_slug(collection_name: str, base_slug: str, field: str = "slug") -> str:
     candidate = _slugify(base_slug)
     if not candidate:
@@ -224,6 +549,7 @@ def _petition_out_from_doc(doc: Dict[str, Any]) -> CommunityPetitionOut:
         summary=_safe_str(doc.get("summary"), 300),
         game_id=_safe_str(doc.get("game_id")),
         game_name=_safe_str(doc.get("game_name"), 120),
+        game_logo_url=_safe_str(doc.get("game_logo_url"), 600),
         category=_safe_str(doc.get("category")) or "other",
         change_type=_safe_str(doc.get("change_type")) or "other",
         status=_safe_str(doc.get("status")) or "published",
@@ -346,7 +672,7 @@ async def _ensure_community_game(game_id: str, game_name: str, user: Dict[str, A
         existing = await community_games.find_one({"_id": clean_game_id})
         if not existing:
             raise HTTPException(status_code=404, detail="Selected game not found")
-        return existing
+        return await _ensure_community_game_logo(existing, persist=True)
 
     if not clean_game_name:
         raise HTTPException(status_code=400, detail="Game selection is required")
@@ -357,7 +683,7 @@ async def _ensure_community_game(game_id: str, game_name: str, user: Dict[str, A
 
     existing = await community_games.find_one({"normalized_name": normalized_name})
     if existing:
-        return existing
+        return await _ensure_community_game_logo(existing, persist=True)
 
     tracked_match = await tracked_games.find_one(
         {"name": {"$regex": f"^{re.escape(clean_game_name)}$", "$options": "i"}},
@@ -367,6 +693,7 @@ async def _ensure_community_game(game_id: str, game_name: str, user: Dict[str, A
     canonical_name = _safe_str((tracked_match or {}).get("name") or clean_game_name, 120)
     slug = await _unique_slug("community_games", canonical_name)
 
+    now = datetime.utcnow()
     doc = {
         "_id": str(uuid.uuid4()),
         "slug": slug,
@@ -374,10 +701,15 @@ async def _ensure_community_game(game_id: str, game_name: str, user: Dict[str, A
         "normalized_name": _normalize_key(canonical_name),
         "subreddit": _safe_str((tracked_match or {}).get("subreddit"), 80),
         "petition_count": 0,
+        "logo_url": "",
+        "logo_source": "",
+        "logo_status": "pending" if _igdb_enabled() else "disabled",
+        "logo_last_verified_at": None,
         "created_by_user_id": _safe_str(user.get("user_id")),
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
+        "created_at": now,
+        "updated_at": now,
     }
+    doc = await _ensure_community_game_logo(doc, persist=False)
     await community_games.insert_one(doc)
     return doc
 
@@ -431,6 +763,7 @@ async def search_community_games(
                 slug=_safe_str(row.get("slug")),
                 name=name,
                 petition_count=int(row.get("petition_count", 0) or 0),
+                logo_url=_safe_str(row.get("logo_url"), 600),
                 source="catalog",
             )
         )
@@ -446,7 +779,7 @@ async def search_community_games(
             if not name or not key or key in seen_names:
                 continue
             seen_names.add(key)
-            results.append(CommunityGameOut(id="", slug=_slugify(name), name=name, petition_count=0, source="suggested"))
+            results.append(CommunityGameOut(id="", slug=_slugify(name), name=name, petition_count=0, logo_url="", source="suggested"))
 
     return results[:limit]
 
@@ -460,6 +793,7 @@ async def create_community_game(payload: CommunityGameCreateIn, request: Request
         slug=_safe_str(game_doc.get("slug")),
         name=_safe_str(game_doc.get("name"), 120),
         petition_count=int(game_doc.get("petition_count", 0) or 0),
+        logo_url=_safe_str(game_doc.get("logo_url"), 600),
         source="catalog",
     )
 
@@ -486,9 +820,11 @@ async def list_petitions(
         .limit(limit)
     )
 
-    items: List[CommunityPetitionOut] = []
+    rows: List[Dict[str, Any]] = []
     async for row in cursor:
-        items.append(_petition_out_from_doc(row))
+        rows.append(dict(row))
+    rows = await _hydrate_petition_game_logos(rows)
+    items = [_petition_out_from_doc(row) for row in rows]
 
     return CommunityPetitionListOut(items=items, total=total, page=page, limit=limit)
 
@@ -501,9 +837,11 @@ async def my_petitions(user=Depends(get_current_user)):
         .sort([("created_at", -1)])
         .limit(100)
     )
-    items: List[CommunityPetitionOut] = []
+    rows: List[Dict[str, Any]] = []
     async for row in cursor:
-        items.append(_petition_out_from_doc(row))
+        rows.append(dict(row))
+    rows = await _hydrate_petition_game_logos(rows)
+    items = [_petition_out_from_doc(row) for row in rows]
     return CommunityMyPetitionsOut(items=items)
 
 
@@ -518,9 +856,11 @@ async def milestone_candidates(
         .sort([("supporter_count", -1), ("last_support_at", -1), ("created_at", -1)])
         .limit(limit)
     )
-    items: List[CommunityPetitionOut] = []
+    rows: List[Dict[str, Any]] = []
     async for row in cursor:
-        items.append(_petition_out_from_doc(row))
+        rows.append(dict(row))
+    rows = await _hydrate_petition_game_logos(rows)
+    items = [_petition_out_from_doc(row) for row in rows]
     return CommunityMilestoneCandidatesOut(items=items)
 
 
@@ -563,6 +903,7 @@ async def create_petition(payload: CommunityPetitionCreateIn, request: Request, 
         "body": body,
         "game_id": _safe_str(game_doc.get("_id")),
         "game_name": _safe_str(game_doc.get("name"), 120),
+        "game_logo_url": _safe_str(game_doc.get("logo_url"), 600),
         "category": category,
         "change_type": change_type,
         "status": "published",
@@ -592,7 +933,9 @@ async def get_petition(petition_ref: str):
     petition = await _get_petition_by_ref(petition_ref)
     if not petition or _safe_str(petition.get("status"), 40).lower() not in {"published", "under_review", "sent_to_studio", "acknowledged"}:
         raise HTTPException(status_code=404, detail="Petition not found")
-    return _petition_detail_out_from_doc(petition, user_has_supported=False)
+    hydrated_rows = await _hydrate_petition_game_logos([dict(petition)])
+    hydrated = hydrated_rows[0] if hydrated_rows else dict(petition)
+    return _petition_detail_out_from_doc(hydrated, user_has_supported=False)
 
 
 @router.get("/petitions/{petition_ref}/support-status", response_model=CommunitySupportStatusOut)

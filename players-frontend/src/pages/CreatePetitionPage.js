@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import api from '../api/axios';
-import { PrimaryButton, Tag } from '../components/UI';
+import { GameBadge, PrimaryButton, Tag } from '../components/UI';
 import { formatNumber, prettyLabel, toArray } from '../lib/community';
 import { useAuth } from '../hooks/useAuth';
 
@@ -113,7 +113,10 @@ export default function CreatePetitionPage() {
             {selectedGame ? (
               <div className="mt-2 flex items-center gap-2 text-xs text-slate-500 flex-wrap">
                 <Tag tone="success">Selected</Tag>
-                <span>{selectedGame.name}</span>
+                <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1">
+                  <GameBadge name={selectedGame.name} logoUrl={selectedGame.logo_url} size="sm" />
+                  <span className="text-slate-700 font-medium">{selectedGame.name}</span>
+                </div>
                 <button type="button" className="copy-link text-xs" onClick={() => setSelectedGame(null)}>Clear</button>
               </div>
             ) : null}
@@ -132,8 +135,11 @@ export default function CreatePetitionPage() {
                     className="w-full text-left px-3 py-2 border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm text-slate-900">{game.name}</span>
-                      <span className="text-xs text-slate-500">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <GameBadge name={game.name} logoUrl={game.logo_url} size="sm" />
+                        <span className="text-sm text-slate-900 truncate">{game.name}</span>
+                      </div>
+                      <span className="text-xs text-slate-500 shrink-0">
                         {game.source === 'catalog' ? `${formatNumber(game.petition_count)} petitions` : 'Suggested'}
                       </span>
                     </div>
