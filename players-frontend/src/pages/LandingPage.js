@@ -37,71 +37,65 @@ export default function LandingPage() {
     <main>
       <section className="page-shell pt-8 md:pt-12">
         <div className="hero-grid">
-          <div className="hero-panel p-6 md:p-8 xl:p-10">
-            <p className="section-eyebrow">Player petitions that move studios</p>
+          <div className="hero-panel hero-panel-main p-6 md:p-8 xl:p-10">
+            <p className="section-eyebrow">Backed by players</p>
             <h1 className="hero-title text-4xl md:text-6xl leading-[0.95] mt-4 max-w-3xl">
-              Turn community frustration into a clear, shareable request.
+              Make game changes happen.
             </h1>
             <p className="hero-subtitle mt-5 text-base md:text-lg leading-relaxed max-w-2xl">
-              Start a petition for a real game change, collect supporters, and track progress toward milestones.
-              When enough players back the same request, it becomes much harder to ignore.
+              Start a petition, rally players behind one clear idea, and build real momentum.
+              When enough players back the same request, it rises to the top.
             </p>
 
-            <div className="mt-7 flex flex-wrap gap-3">
-              <Link to="/petitions" className="btn-primary px-5 py-3 text-sm md:text-base">
-                <span>Browse Petitions</span>
+            <div className="mt-7 flex flex-wrap gap-3 hero-cta-row">
+              <Link to={user ? '/petitions/new' : '/signup'} className="btn-primary hero-cta-primary px-5 py-3 text-sm md:text-base">
+                <span>Start a Petition</span>
               </Link>
-              {user ? (
-                <Link to="/petitions/new" className="btn-secondary px-5 py-3 text-sm md:text-base font-semibold">
-                  Start a Petition
-                </Link>
-              ) : (
-                <Link to="/signup" className="btn-secondary px-5 py-3 text-sm md:text-base font-semibold">
-                  Create Account to Start
-                </Link>
-              )}
+              <Link to="/petitions" className="btn-secondary px-5 py-3 text-sm md:text-base font-semibold">
+                Explore Player Requests
+              </Link>
             </div>
 
             <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="feature-card">
-                <h3>Clear asks</h3>
-                <p>Keep requests focused on one change so more players understand and support it.</p>
+                <h3>Clear ideas</h3>
+                <p>One focused change per petition so players know exactly what they are backing.</p>
               </div>
               <div className="feature-card">
-                <h3>Public momentum</h3>
-                <p>Track supporters and milestone progress with a link you can share anywhere.</p>
+                <h3>Real momentum</h3>
+                <p>Track supporters and hit visible goals together.</p>
               </div>
               <div className="feature-card">
-                <h3>Studio-ready signal</h3>
-                <p>Milestone-backed petitions can be surfaced as stronger evidence of player demand.</p>
+                <h3>Rising requests</h3>
+                <p>The most backed petitions climb higher and get more visibility.</p>
               </div>
             </div>
           </div>
 
-          <div className="hero-panel p-4 md:p-5">
-            <div className="hero-visual">
-              <div className="hero-core" />
-              <div className="hero-ring hero-ring-a" />
-              <div className="hero-ring hero-ring-b" />
-              <div className="hero-ring hero-ring-c" />
-              <div className="hero-beam" />
+          <div className="hero-panel hero-panel-visual p-4 md:p-5">
+            <div className="hero-visual hero-petition-preview-wrap">
+              <div className="hero-pulse-orb hero-pulse-orb-a" />
+              <div className="hero-pulse-orb hero-pulse-orb-b" />
+              <div className="hero-pulse-orb hero-pulse-orb-c" />
 
-              <div className="hero-card hero-card-a">
-                <p className="hero-card-title">Petition growth</p>
-                <p className="hero-card-body">Players are backing one clear request instead of scattering across dozens of posts.</p>
-                <p className="hero-card-metric">+142 supporters this week</p>
-              </div>
+              <div className="hero-petition-chip hero-petition-chip-a">Trending idea</div>
+              <div className="hero-petition-chip hero-petition-chip-b">Backed by players</div>
 
-              <div className="hero-card hero-card-b">
-                <p className="hero-card-title">Milestone tracking</p>
-                <p className="hero-card-body">Visible progress gives communities a reason to share and keep pushing.</p>
-                <p className="hero-card-metric">Next milestone: 500 supporters</p>
-              </div>
+              <div className="hero-petition-preview card-glass">
+                <p className="hero-petition-label">Petition Title</p>
+                <h3 className="hero-petition-title">Add More Customisation Options</h3>
 
-              <div className="hero-card hero-card-c">
-                <p className="hero-card-title">Studio handoff</p>
-                <p className="hero-card-body">High-support requests can be surfaced as stronger player demand signals.</p>
-                <p className="hero-card-metric">Evidence-backed, easier to review</p>
+                <div className="hero-petition-supporters-row">
+                  <p className="hero-petition-supporters">2,184 supporters</p>
+                  <span className="hero-petition-status">Rising</span>
+                </div>
+
+                <div className="hero-petition-progress-wrap" aria-hidden="true">
+                  <div className="hero-petition-progress-fill" />
+                </div>
+                <p className="hero-petition-goal">Next goal: 2,500 supporters</p>
+
+                <button type="button" className="hero-petition-cta">Back This Petition</button>
               </div>
             </div>
           </div>
@@ -134,7 +128,7 @@ export default function LandingPage() {
             </div>
             <div className="feature-card">
               <h3>3. Reach milestones</h3>
-              <p>As support grows, the request becomes a stronger signal that can be surfaced to studios.</p>
+              <p>As support grows, the request gains more visibility and becomes easier for more players to rally behind.</p>
             </div>
           </div>
         </div>

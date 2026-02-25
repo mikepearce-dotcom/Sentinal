@@ -38,9 +38,10 @@ body,
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 10% -10%, rgba(37, 99, 235, 0.12), transparent 35%),
-    radial-gradient(circle at 100% 0%, rgba(20, 184, 166, 0.12), transparent 42%),
-    linear-gradient(180deg, var(--bg), #f8fbff 45%, var(--bg-2));
+    radial-gradient(circle at 8% -10%, rgba(59, 130, 246, 0.12), transparent 34%),
+    radial-gradient(circle at 84% 4%, rgba(139, 92, 246, 0.10), transparent 40%),
+    radial-gradient(circle at 94% 12%, rgba(6, 182, 212, 0.10), transparent 34%),
+    linear-gradient(180deg, #f8fafc, #f9fbff 45%, #eff4fb);
   color: var(--text);
   font-family: "Plus Jakarta Sans", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -164,8 +165,8 @@ body {
 }
 
 .btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 14px 26px rgba(37, 99, 235, 0.24);
+  transform: translateY(-2px);
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.24);
   filter: saturate(1.05);
 }
 
@@ -184,7 +185,7 @@ body {
 .btn-secondary:hover {
   border-color: rgba(14, 165, 233, 0.28);
   background: rgba(255, 255, 255, 1);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .btn-ghost {
@@ -338,6 +339,59 @@ a:focus-visible {
   box-shadow: var(--shadow-lg);
 }
 
+.hero-panel-main,
+.hero-panel-visual {
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-panel-main::before {
+  content: "";
+  position: absolute;
+  inset: -18% -8% auto 30%;
+  height: 78%;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 20% 35%, rgba(59, 130, 246, 0.23), transparent 55%),
+    radial-gradient(circle at 70% 35%, rgba(139, 92, 246, 0.18), transparent 58%),
+    radial-gradient(circle at 84% 22%, rgba(6, 182, 212, 0.14), transparent 52%);
+  filter: blur(12px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.hero-panel-main > * {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-cta-row {
+  position: relative;
+  z-index: 2;
+}
+
+.hero-cta-primary {
+  position: relative;
+  isolation: isolate;
+}
+
+.hero-cta-primary::before {
+  content: "";
+  position: absolute;
+  inset: -8px -12px;
+  border-radius: 18px;
+  background: radial-gradient(circle at 50% 50%, rgba(99, 102, 241, 0.28), rgba(6, 182, 212, 0.18) 42%, transparent 72%);
+  filter: blur(12px);
+  opacity: 0.85;
+  z-index: -1;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.hero-cta-primary:hover::before {
+  opacity: 1;
+  transform: scale(1.03);
+}
+
 .hero-visual {
   position: relative;
   width: min(520px, 100%);
@@ -345,128 +399,216 @@ a:focus-visible {
   margin: 0 auto;
   border-radius: 22px;
   overflow: hidden;
-  border: 1px solid rgba(14, 165, 233, 0.16);
+  border: 1px solid rgba(99, 102, 241, 0.12);
   background:
-    radial-gradient(circle at 50% 50%, rgba(14, 165, 233, 0.12), rgba(255, 255, 255, 0.9) 58%),
-    linear-gradient(160deg, rgba(37, 99, 235, 0.04), rgba(20, 184, 166, 0.03));
+    radial-gradient(circle at 18% 14%, rgba(59, 130, 246, 0.14), transparent 44%),
+    radial-gradient(circle at 78% 18%, rgba(139, 92, 246, 0.13), transparent 52%),
+    radial-gradient(circle at 66% 78%, rgba(6, 182, 212, 0.10), transparent 46%),
+    linear-gradient(165deg, rgba(255, 255, 255, 0.95), rgba(248, 251, 255, 0.88));
 }
 
 .hero-visual::before {
   content: "";
   position: absolute;
   inset: 0;
-  background-image:
-    linear-gradient(rgba(14, 165, 233, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(14, 165, 233, 0.05) 1px, transparent 1px);
-  background-size: 24px 24px;
-  opacity: 0.8;
+  background:
+    linear-gradient(rgba(99, 102, 241, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.85;
 }
 
-.hero-core {
+.hero-petition-preview-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-pulse-orb {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  border-radius: 999px;
+  filter: blur(8px);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.hero-pulse-orb-a {
+  width: 210px;
+  height: 210px;
+  top: -18px;
+  right: 22px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.18), transparent 68%);
+}
+
+.hero-pulse-orb-b {
+  width: 170px;
+  height: 170px;
+  bottom: 28px;
+  left: 22px;
+  background: radial-gradient(circle, rgba(6, 182, 212, 0.16), transparent 70%);
+}
+
+.hero-pulse-orb-c {
   width: 140px;
   height: 140px;
-  transform: translate(-50%, -50%);
-  border-radius: 999px;
-  border: 1px solid rgba(14, 165, 233, 0.25);
-  background: radial-gradient(circle, rgba(14, 165, 233, 0.18), rgba(255, 255, 255, 0.85));
-  box-shadow: 0 0 0 14px rgba(14, 165, 233, 0.04), 0 18px 30px rgba(14, 165, 233, 0.12);
-  animation: heroPulse 3s ease-in-out infinite;
+  top: 46%;
+  left: 8%;
+  background: radial-gradient(circle, rgba(236, 72, 153, 0.10), transparent 72%);
 }
 
-.hero-core::after {
-  content: "";
+.hero-petition-chip {
   position: absolute;
-  inset: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.22), rgba(20, 184, 166, 0.2));
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #334155;
+  backdrop-filter: blur(12px);
+  animation: drift 8s ease-in-out infinite;
 }
 
-.hero-ring {
-  position: absolute;
-  top: 50%;
-  left: 50%;
+.hero-petition-chip-a {
+  top: 14%;
+  left: 9%;
+}
+
+.hero-petition-chip-b {
+  bottom: 14%;
+  right: 9%;
+  animation-delay: -2.3s;
+}
+
+.hero-petition-preview {
+  position: relative;
+  width: min(360px, calc(100% - 2rem));
+  padding: 1.15rem;
+  border-radius: 20px;
+  backdrop-filter: blur(14px);
+  border-color: rgba(255, 255, 255, 0.75);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.84));
+  box-shadow: 0 20px 34px rgba(15, 23, 42, 0.08);
+  z-index: 1;
+  transition: transform 220ms ease, box-shadow 220ms ease;
+}
+
+.hero-petition-preview:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 24px 42px rgba(15, 23, 42, 0.10);
+}
+
+.hero-petition-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.hero-petition-title {
+  margin: 0.5rem 0 0;
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 1.55rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+}
+
+.hero-petition-supporters-row {
+  margin-top: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.hero-petition-supporters {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.hero-petition-status {
+  display: inline-flex;
+  align-items: center;
   border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #0369a1;
+  background: rgba(14, 165, 233, 0.10);
   border: 1px solid rgba(14, 165, 233, 0.14);
 }
 
-.hero-ring-a {
-  width: 230px;
-  height: 230px;
-  margin-left: -115px;
-  margin-top: -115px;
-  animation: spinCW 16s linear infinite;
+.hero-petition-progress-wrap {
+  margin-top: 0.85rem;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(226, 232, 240, 0.95), rgba(226, 232, 240, 0.75));
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  overflow: hidden;
 }
 
-.hero-ring-b {
-  width: 330px;
-  height: 330px;
-  margin-left: -165px;
-  margin-top: -165px;
-  border-color: rgba(20, 184, 166, 0.15);
-  animation: spinCCW 22s linear infinite;
+.hero-petition-progress-fill {
+  width: 87.36%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8, #6366f1 58%, #8b5cf6 100%);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.28), 0 0 18px rgba(99, 102, 241, 0.16);
+  transform-origin: left center;
+  animation: heroProgressLoad 1100ms cubic-bezier(0.2, 0.9, 0.2, 1) both 180ms;
 }
 
-.hero-ring-c {
-  width: 430px;
-  height: 430px;
-  margin-left: -215px;
-  margin-top: -215px;
-  border-color: rgba(251, 113, 133, 0.14);
-  animation: spinCW 30s linear infinite;
-}
-
-.hero-beam {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 2px;
-  height: 46%;
-  transform-origin: bottom center;
-  background: linear-gradient(to top, rgba(14, 165, 233, 0.1), rgba(14, 165, 233, 0.7));
-  filter: drop-shadow(0 0 10px rgba(14, 165, 233, 0.28));
-  animation: beamSweep 6s linear infinite;
-}
-
-.hero-card {
-  position: absolute;
-  width: min(220px, calc(100% - 1.25rem));
-  padding: 0.75rem;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
-  animation: drift 7s ease-in-out infinite;
-}
-
-.hero-card-a { top: 10%; left: 6%; }
-.hero-card-b { top: 34%; right: 6%; animation-delay: -2s; }
-.hero-card-c { left: 12%; bottom: 10%; animation-delay: -4.1s; }
-
-.hero-card-title {
-  font-size: 11px;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: #0369a1;
-  font-weight: 700;
-}
-
-.hero-card-body {
-  margin-top: 0.4rem;
-  font-size: 13px;
-  color: #334155;
-  line-height: 1.35;
-}
-
-.hero-card-metric {
-  margin-top: 0.45rem;
-  font-size: 12px;
-  color: #0f172a;
+.hero-petition-goal {
+  margin: 0.55rem 0 0;
+  font-size: 0.82rem;
+  color: #475569;
   font-weight: 600;
+}
+
+.hero-petition-cta {
+  margin-top: 0.9rem;
+  width: 100%;
+  position: relative;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #0ea5e9, #2563eb);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 0.85rem 0.9rem;
+  box-shadow: 0 10px 18px rgba(37, 99, 235, 0.18);
+  transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
+}
+
+.hero-petition-cta::before {
+  content: "";
+  position: absolute;
+  inset: -6px -4px;
+  border-radius: 16px;
+  background: radial-gradient(circle at 50% 50%, rgba(56, 189, 248, 0.34), rgba(99, 102, 241, 0.26) 55%, transparent 78%);
+  filter: blur(10px);
+  z-index: -1;
+  opacity: 0.4;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.hero-petition-cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 22px rgba(37, 99, 235, 0.22);
+  filter: saturate(1.04);
+}
+
+.hero-petition-cta:hover::before {
+  opacity: 0.9;
+  transform: scale(1.03);
 }
 
 .feature-card {
@@ -474,6 +616,14 @@ a:focus-visible {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.84);
   padding: 1rem;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  transform-origin: center;
+}
+
+.feature-card:hover {
+  transform: translateY(-2px) scale(1.02);
+  border-color: rgba(99, 102, 241, 0.16);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
 }
 
 .feature-card h3 {
@@ -555,6 +705,11 @@ a:focus-visible {
   to { transform: translate(-50%, -100%) rotate(360deg); }
 }
 
+@keyframes heroProgressLoad {
+  from { transform: scaleX(0.05); opacity: 0.75; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+
 @keyframes heroPulse {
   0%, 100% { transform: translate(-50%, -50%) scale(1); }
   50% { transform: translate(-50%, -50%) scale(1.06); }
@@ -570,54 +725,50 @@ a:focus-visible {
     min-height: 360px;
   }
 
-  .hero-core {
-    width: 118px;
-    height: 118px;
+  .hero-panel-main::before {
+    inset: -18% -12% auto 12%;
+    height: 70%;
   }
 
-  .hero-ring-a {
-    width: 185px;
-    height: 185px;
-    margin-left: -92.5px;
-    margin-top: -92.5px;
-  }
-
-  .hero-ring-b {
-    width: 265px;
-    height: 265px;
-    margin-left: -132.5px;
-    margin-top: -132.5px;
-  }
-
-  .hero-ring-c {
-    width: 330px;
-    height: 330px;
-    margin-left: -165px;
-    margin-top: -165px;
-  }
-
-  .hero-card {
+  .hero-petition-preview {
     width: calc(100% - 1rem);
-    left: 0.5rem;
-    right: 0.5rem;
+    padding: 1rem;
+    border-radius: 18px;
   }
 
-  .hero-card-b {
-    top: 42%;
+  .hero-petition-title {
+    font-size: 1.35rem;
   }
 
-  .hero-card-c {
-    bottom: 0.6rem;
+  .hero-petition-chip {
+    font-size: 0.68rem;
+    padding: 0.35rem 0.6rem;
+  }
+
+  .hero-petition-chip-a {
+    top: 0.75rem;
+    left: 0.75rem;
+  }
+
+  .hero-petition-chip-b {
+    right: 0.75rem;
+    bottom: 0.75rem;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hero-core,
-  .hero-ring-a,
-  .hero-ring-b,
-  .hero-ring-c,
-  .hero-beam,
-  .hero-card {
+  .hero-petition-chip,
+  .hero-petition-progress-fill,
+  .hero-pulse-orb {
     animation: none !important;
+  }
+
+  .feature-card,
+  .hero-petition-preview,
+  .btn-primary,
+  .btn-secondary,
+  .btn-ghost,
+  .hero-petition-cta {
+    transition: none !important;
   }
 }
