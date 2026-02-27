@@ -13,9 +13,10 @@ function upscaleIgdbHeroImage(url) {
   if (!raw) return '';
   if (!raw.includes('images.igdb.com')) return raw;
   return raw
-    .replace('/t_cover_small/', '/t_cover_big/')
-    .replace('/t_thumb/', '/t_cover_big/')
-    .replace('/t_micro/', '/t_cover_big/');
+    .replace('/t_cover_small/', '/t_cover_big_2x/')
+    .replace('/t_cover_big/', '/t_cover_big_2x/')
+    .replace('/t_thumb/', '/t_cover_big_2x/')
+    .replace('/t_micro/', '/t_cover_big_2x/');
 }
 
 export default function LandingPage() {
@@ -60,10 +61,23 @@ export default function LandingPage() {
   const heroPreviewSupporters = Number(heroPreviewSource?.supporter_count || 2184) || 2184;
   const heroPreviewGoal = Number(heroPreviewSource?.next_milestone || Math.max(heroPreviewSupporters + 316, 2500)) || 2500;
   const featuredCards = toArray(featured).slice(0, HERO_CARD_LIMIT);
+  const heroUsps = [
+    {
+      title: 'Clear ideas',
+      copy: 'One focused change per petition so players know exactly what they are backing.',
+    },
+    {
+      title: 'Real momentum',
+      copy: 'Track supporters, build visible traction, and push the same request forward together.',
+    },
+    {
+      title: 'Rising requests',
+      copy: 'The most backed ideas climb higher, get shared faster, and stay in front of more players.',
+    },
+  ];
 
   const heroCollageItems = [];
   const heroCollageSeen = new Set();
-  const featuredItems = toArray(featured);
   const trendingItems = toArray(trendingGames);
 
   for (const item of trendingItems) {
@@ -113,81 +127,80 @@ export default function LandingPage() {
   return (
     <main>
       <section className="page-shell pt-8 md:pt-12">
-        <div className="hero-grid">
-          <div className="hero-panel hero-panel-main p-6 md:p-8 xl:p-10">
-            <p className="section-eyebrow">Backed by players</p>
-            <h1 className="hero-title text-4xl md:text-6xl leading-[0.95] mt-4 max-w-3xl">
-              Make game changes happen.
-            </h1>
-            <p className="hero-subtitle mt-5 text-base md:text-lg leading-relaxed max-w-2xl">
-              Start a petition, rally players behind one clear idea, and build real momentum.
-              When enough players back the same request, it rises to the top.
-            </p>
-
-            <div className="mt-7 flex flex-wrap gap-3 hero-cta-row">
-              <Link to={user ? '/petitions/new' : '/signup'} className="btn-primary hero-cta-primary px-5 py-3 text-sm md:text-base">
-                <span>Start a Petition</span>
-              </Link>
-              <Link to="/petitions" className="btn-secondary px-5 py-3 text-sm md:text-base font-semibold">
-                Explore Player Requests
-              </Link>
-            </div>
-
-            <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="feature-card">
-                <h3>Clear ideas</h3>
-                <p>One focused change per petition so players know exactly what they are backing.</p>
+        <div className="hero-stage">
+          <div className="hero-collage hero-collage-stage" aria-hidden="true">
+            {heroCollageItems.map((item, index) => (
+              <div
+                key={item.id}
+                className={`hero-collage-slice hero-collage-slice-${index + 1} ${item.logoUrl ? '' : 'hero-collage-slice-fallback'}`.trim()}
+              >
+                {item.logoUrl ? (
+                  <img src={item.logoUrl} alt="" className="hero-collage-image" loading="lazy" />
+                ) : (
+                  <span className="hero-collage-fallback-text">{item.gameName}</span>
+                )}
               </div>
-              <div className="feature-card">
-                <h3>Real momentum</h3>
-                <p>Track supporters and hit visible goals together.</p>
-              </div>
-              <div className="feature-card">
-                <h3>Rising requests</h3>
-                <p>The most backed petitions climb higher and get more visibility.</p>
-              </div>
-            </div>
+            ))}
           </div>
 
-          <div className="hero-panel hero-panel-visual p-4 md:p-5">
-            <div className="hero-visual hero-petition-preview-wrap">
-              <div className="hero-collage" aria-hidden="true">
-                {heroCollageItems.map((item, index) => (
-                  <div
-                    key={item.id}
-                    className={`hero-collage-slice hero-collage-slice-${index + 1} ${item.logoUrl ? '' : 'hero-collage-slice-fallback'}`.trim()}
-                  >
-                    {item.logoUrl ? (
-                      <img src={item.logoUrl} alt="" className="hero-collage-image" loading="lazy" />
-                    ) : (
-                      <span className="hero-collage-fallback-text">{item.gameName}</span>
-                    )}
-                  </div>
-                ))}
+          <div className="hero-grid">
+            <div className="hero-panel hero-panel-main p-6 md:p-8 xl:p-10">
+              <p className="section-eyebrow">Backed by players</p>
+              <h1 className="hero-title text-4xl md:text-6xl leading-[0.95] mt-4 max-w-3xl">
+                Make game changes happen.
+              </h1>
+              <p className="hero-subtitle mt-5 text-base md:text-lg leading-relaxed max-w-2xl">
+                Start a petition, rally players behind one clear idea, and build real momentum.
+                When enough players back the same request, it rises to the top.
+              </p>
+
+              <div className="mt-7 flex flex-wrap gap-3 hero-cta-row">
+                <Link to={user ? '/petitions/new' : '/signup'} className="btn-primary hero-cta-primary px-5 py-3 text-sm md:text-base">
+                  <span>Start a Petition</span>
+                </Link>
+                <Link to="/petitions" className="btn-secondary px-5 py-3 text-sm md:text-base font-semibold">
+                  Explore Player Requests
+                </Link>
               </div>
 
-              <div className="hero-pulse-orb hero-pulse-orb-a" />
-              <div className="hero-pulse-orb hero-pulse-orb-b" />
-              <div className="hero-pulse-orb hero-pulse-orb-c" />
+              <ul className="hero-usp-list mt-8" aria-label="Why players use petitions">
+                {heroUsps.map((item) => (
+                  <li key={item.title} className="hero-usp-item">
+                    <span className="hero-usp-bullet" aria-hidden="true" />
+                    <div>
+                      <p className="hero-usp-title">{item.title}</p>
+                      <p className="hero-usp-copy">{item.copy}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-              <div className="hero-petition-chip hero-petition-chip-a">Trending idea</div>
-              <div className="hero-petition-chip hero-petition-chip-b">Backed by players</div>
+            <div className="hero-panel hero-panel-visual p-4 md:p-5">
+              <div className="hero-petition-preview-wrap">
+                <div className="hero-pulse-orb hero-pulse-orb-a" />
+                <div className="hero-pulse-orb hero-pulse-orb-b" />
+                <div className="hero-pulse-orb hero-pulse-orb-c" />
 
-              <div className="hero-petition-preview card-glass">
-                <p className="hero-petition-label">Petition Title</p>
-                <h3 className="hero-petition-title">{heroPreviewTitle}</h3>
+                <div className="hero-petition-chip hero-petition-chip-a">Trending idea</div>
+                <div className="hero-petition-chip hero-petition-chip-b">Backed by players</div>
 
-                <div className="hero-petition-supporters-row">
-                  <p className="hero-petition-supporters">{formatNumber(heroPreviewSupporters)} supporters</p>
-                  <span className="hero-petition-status">Rising</span>
+                <div className="hero-petition-preview card-glass">
+                  <p className="hero-petition-label">Petition Title</p>
+                  <h3 className="hero-petition-title">{heroPreviewTitle}</h3>
+
+                  <div className="hero-petition-supporters-row">
+                    <p className="hero-petition-supporters">{formatNumber(heroPreviewSupporters)} supporters</p>
+                    <span className="hero-petition-status">Rising</span>
+                  </div>
+
+                  <div className="hero-petition-progress-wrap" aria-hidden="true">
+                    <div className="hero-petition-progress-fill" />
+                  </div>
+                  <p className="hero-petition-goal">Next goal: {formatNumber(heroPreviewGoal)} supporters</p>
+
+                  <button type="button" className="hero-petition-cta">Back This Petition</button>
                 </div>
-
-                <div className="hero-petition-progress-wrap" aria-hidden="true">
-                  <div className="hero-petition-progress-fill" />
-                </div>
-                <p className="hero-petition-goal">Next goal: {formatNumber(heroPreviewGoal)} supporters</p>
-
-                <button type="button" className="hero-petition-cta">Back This Petition</button>
               </div>
             </div>
           </div>
