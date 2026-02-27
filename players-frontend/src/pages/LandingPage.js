@@ -21,15 +21,21 @@ function upscaleIgdbHeroImage(url) {
 export default function LandingPage() {
   const { user } = useAuth();
   const [featured, setFeatured] = useState([]);
+  const [trendingGames, setTrendingGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
 
-    api.get('/api/community/petitions', { params: { sort: 'momentum', limit: 12, page: 1 } })
-      .then((resp) => {
-        if (!cancelled) setFeatured(toArray(resp?.data?.items));
+    Promise.all([
+      api.get('/api/community/petitions', { params: { sort: 'momentum', limit: 12, page: 1 } }),
+      api.get('/api/community/games/trending', { params: { limit: 5 } }),
+    ])
+      .then(([petitionsResp, trendingResp]) => {
+        if (cancelled) return;
+        setFeatured(toArray(petitionsResp?.data?.items));
+        setTrendingGames(toArray(trendingResp?.data));
       })
       .catch((err) => {
         if (!cancelled) {
@@ -58,12 +64,12 @@ export default function LandingPage() {
   const heroCollageItems = [];
   const heroCollageSeen = new Set();
   const featuredItems = toArray(featured);
+  const trendingItems = toArray(trendingGames);
 
-  for (const item of featuredItems) {
-    const baseLogoUrl = String(item?.game_logo_url || '').trim();
-    const logoUrl = upscaleIgdbHeroImage(baseLogoUrl);
-    const gameName = String(item?.game_name || '').trim() || 'Game';
-    const dedupeKey = `${gameName.toLowerCase()}|${baseLogoUrl}`;
+  for (const item of trendingItems) {
+    const logoUrl = upscaleIgdbHeroImage(String(item?.logo_url || '').trim());
+    const gameName = String(item?.name || '').trim() || 'Game';
+    const dedupeKey = `${gameName.toLowerCase()}|${logoUrl}`;
     if (!logoUrl || heroCollageSeen.has(dedupeKey)) {
       continue;
     }
@@ -79,10 +85,9 @@ export default function LandingPage() {
   }
 
   if (heroCollageItems.length < HERO_COLLAGE_LIMIT) {
-    for (const item of featuredItems) {
-      const baseLogoUrl = String(item?.game_logo_url || '').trim();
-      const logoUrl = upscaleIgdbHeroImage(baseLogoUrl);
-      const gameName = String(item?.game_name || '').trim() || 'Game';
+    for (const item of trendingItems) {
+      const logoUrl = upscaleIgdbHeroImage(String(item?.logo_url || '').trim());
+      const gameName = String(item?.name || '').trim() || 'Game';
       if (!logoUrl) {
         continue;
       }

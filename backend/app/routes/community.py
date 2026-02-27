@@ -30,8 +30,10 @@ IGDB_LOGO_IMAGE_SIZE = str(os.getenv("IGDB_LOGO_IMAGE_SIZE") or "cover_small").s
 _igdb_token_cache: Dict[str, Any] = {"access_token": "", "expires_at": 0.0}
 _igdb_logo_search_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _igdb_game_suggest_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_igdb_trending_games_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _igdb_token_lock = asyncio.Lock()
 IGDB_SUGGEST_CACHE_TTL_SECONDS = 10 * 60
+IGDB_TRENDING_CACHE_TTL_SECONDS = 30 * 60
 
 DEFAULT_PETITION_MILESTONES = [100, 500, 1000, 5000]
 PETITION_CATEGORIES = [
@@ -505,6 +507,169 @@ async def _igdb_search_game_suggestions(query_text: str, limit: int = 8) -> List
     return rows
 
 
+def _igdb_trending_cache_get(limit: int) -> Optional[List[Dict[str, Any]]]:
+    cache_key = str(max(1, min(int(limit or 5), 12)))
+    cached = _igdb_trending_games_cache.get(cache_key)
+    if not cached:
+        return None
+    expires_at, rows = cached
+    if float(expires_at or 0.0) <= time.time():
+        _igdb_trending_games_cache.pop(cache_key, None)
+        return None
+    return [dict(item) for item in (rows or []) if isinstance(item, dict)]
+
+
+def _igdb_trending_cache_set(limit: int, rows: List[Dict[str, Any]]) -> None:
+    cache_key = str(max(1, min(int(limit or 5), 12)))
+    safe_rows = [dict(item) for item in rows if isinstance(item, dict)]
+    _igdb_trending_games_cache[cache_key] = (time.time() + IGDB_TRENDING_CACHE_TTL_SECONDS, safe_rows)
+
+
+async def _igdb_fetch_trending_games(limit: int = 5) -> List[Dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 5), 12))
+    if not _igdb_enabled():
+        return []
+
+    cached = _igdb_trending_cache_get(safe_limit)
+    if cached is not None:
+        return cached[:safe_limit]
+
+    token = await _igdb_get_access_token()
+    if not token:
+        return []
+
+    popularity_query = (
+        'fields game_id,value,popularity_type; '
+        'where game_id != null & popularity_type = 1; '
+        'sort value desc; '
+        f'limit {max(18, safe_limit * 4)};'
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=IGDB_REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            popularity_resp = await client.post(
+                'https://api.igdb.com/v4/popularity_primitives',
+                content=popularity_query,
+                headers={
+                    'Client-ID': IGDB_TWITCH_CLIENT_ID,
+                    'Authorization': f'Bearer {token}',
+                    'Accept': 'application/json',
+                    'Content-Type': 'text/plain',
+                },
+            )
+    except Exception as exc:
+        print(f'IGDB trending lookup failed: {exc}')
+        return []
+
+    if popularity_resp.status_code != 200:
+        excerpt = _safe_str(popularity_resp.text, 240)
+        print(f'IGDB trending popularity failed HTTP {popularity_resp.status_code}: {excerpt}')
+        return []
+
+    try:
+        popularity_rows = popularity_resp.json()
+    except Exception:
+        print('IGDB trending popularity invalid JSON')
+        return []
+
+    if not isinstance(popularity_rows, list):
+        _igdb_trending_cache_set(safe_limit, [])
+        return []
+
+    ordered_game_ids: List[int] = []
+    seen_ids = set()
+    for row in popularity_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            game_id = int(row.get('game_id') or 0)
+        except Exception:
+            game_id = 0
+        if game_id <= 0 or game_id in seen_ids:
+            continue
+        seen_ids.add(game_id)
+        ordered_game_ids.append(game_id)
+        if len(ordered_game_ids) >= max(15, safe_limit * 3):
+            break
+
+    if not ordered_game_ids:
+        _igdb_trending_cache_set(safe_limit, [])
+        return []
+
+    id_list = ','.join(str(item) for item in ordered_game_ids)
+    games_query = (
+        'fields id,name,slug,cover.image_id; '
+        f'where id = ({id_list}); '
+        f'limit {len(ordered_game_ids)};'
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=IGDB_REQUEST_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            games_resp = await client.post(
+                'https://api.igdb.com/v4/games',
+                content=games_query,
+                headers={
+                    'Client-ID': IGDB_TWITCH_CLIENT_ID,
+                    'Authorization': f'Bearer {token}',
+                    'Accept': 'application/json',
+                    'Content-Type': 'text/plain',
+                },
+            )
+    except Exception as exc:
+        print(f'IGDB trending games fetch failed: {exc}')
+        return []
+
+    if games_resp.status_code != 200:
+        excerpt = _safe_str(games_resp.text, 240)
+        print(f'IGDB trending games failed HTTP {games_resp.status_code}: {excerpt}')
+        return []
+
+    try:
+        game_rows = games_resp.json()
+    except Exception:
+        print('IGDB trending games invalid JSON')
+        return []
+
+    if not isinstance(game_rows, list):
+        _igdb_trending_cache_set(safe_limit, [])
+        return []
+
+    game_map: Dict[int, Dict[str, Any]] = {}
+    for row in game_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            game_id = int(row.get('id') or 0)
+        except Exception:
+            game_id = 0
+        if game_id > 0:
+            game_map[game_id] = row
+
+    results: List[Dict[str, Any]] = []
+    for game_id in ordered_game_ids:
+        row = game_map.get(game_id) or {}
+        name = _safe_str(row.get('name'), 140)
+        if not name:
+            continue
+        cover = row.get('cover') if isinstance(row.get('cover'), dict) else {}
+        image_id = _safe_str(cover.get('image_id'), 80)
+        if not image_id:
+            continue
+        results.append({
+            'id': '',
+            'slug': _safe_str(row.get('slug'), 90) or _slugify(name),
+            'name': name,
+            'petition_count': 0,
+            'logo_url': _igdb_image_url(image_id, size='cover_big_2x'),
+            'source': 'igdb_trending',
+        })
+        if len(results) >= safe_limit:
+            break
+
+    _igdb_trending_cache_set(safe_limit, results)
+    return results[:safe_limit]
+
+
 async def _ensure_community_game_logo(game_doc: Dict[str, Any], persist: bool = True) -> Dict[str, Any]:
     if not isinstance(game_doc, dict):
         return game_doc
@@ -848,6 +1013,30 @@ async def community_metadata():
         change_types=PETITION_CHANGE_TYPES,
         default_milestones=DEFAULT_PETITION_MILESTONES,
     )
+
+
+@router.get("/games/trending", response_model=List[CommunityGameOut])
+async def trending_community_games(
+    limit: int = Query(5, ge=1, le=12),
+):
+    try:
+        rows = await _igdb_fetch_trending_games(limit=limit)
+    except Exception as exc:
+        print(f"IGDB trending endpoint failed: {exc}")
+        rows = []
+
+    return [
+        CommunityGameOut(
+            id=_safe_str(item.get("id")),
+            slug=_safe_str(item.get("slug")),
+            name=_safe_str(item.get("name"), 140),
+            petition_count=int(item.get("petition_count", 0) or 0),
+            logo_url=_safe_str(item.get("logo_url"), 600),
+            source=_safe_str(item.get("source")) or "igdb_trending",
+        )
+        for item in rows
+        if isinstance(item, dict) and _safe_str(item.get("name"))
+    ]
 
 
 @router.get("/games/search", response_model=List[CommunityGameOut])
