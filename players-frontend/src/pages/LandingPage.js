@@ -5,6 +5,19 @@ import PetitionCard from '../components/PetitionCard';
 import { formatNumber, toArray } from '../lib/community';
 import { useAuth } from '../hooks/useAuth';
 
+const HERO_CARD_LIMIT = 6;
+const HERO_COLLAGE_LIMIT = 5;
+
+function upscaleIgdbHeroImage(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  if (!raw.includes('images.igdb.com')) return raw;
+  return raw
+    .replace('/t_cover_small/', '/t_cover_big/')
+    .replace('/t_thumb/', '/t_cover_big/')
+    .replace('/t_micro/', '/t_cover_big/');
+}
+
 export default function LandingPage() {
   const { user } = useAuth();
   const [featured, setFeatured] = useState([]);
@@ -14,7 +27,7 @@ export default function LandingPage() {
   useEffect(() => {
     let cancelled = false;
 
-    api.get('/api/community/petitions', { params: { sort: 'momentum', limit: 6, page: 1 } })
+    api.get('/api/community/petitions', { params: { sort: 'momentum', limit: 12, page: 1 } })
       .then((resp) => {
         if (!cancelled) setFeatured(toArray(resp?.data?.items));
       })
@@ -40,13 +53,17 @@ export default function LandingPage() {
     : heroPreviewTitleRaw;
   const heroPreviewSupporters = Number(heroPreviewSource?.supporter_count || 2184) || 2184;
   const heroPreviewGoal = Number(heroPreviewSource?.next_milestone || Math.max(heroPreviewSupporters + 316, 2500)) || 2500;
+  const featuredCards = toArray(featured).slice(0, HERO_CARD_LIMIT);
 
   const heroCollageItems = [];
   const heroCollageSeen = new Set();
-  for (const item of toArray(featured)) {
-    const logoUrl = String(item?.game_logo_url || '').trim();
+  const featuredItems = toArray(featured);
+
+  for (const item of featuredItems) {
+    const baseLogoUrl = String(item?.game_logo_url || '').trim();
+    const logoUrl = upscaleIgdbHeroImage(baseLogoUrl);
     const gameName = String(item?.game_name || '').trim() || 'Game';
-    const dedupeKey = `${gameName.toLowerCase()}|${logoUrl}`;
+    const dedupeKey = `${gameName.toLowerCase()}|${baseLogoUrl}`;
     if (!logoUrl || heroCollageSeen.has(dedupeKey)) {
       continue;
     }
@@ -56,12 +73,31 @@ export default function LandingPage() {
       gameName,
       logoUrl,
     });
-    if (heroCollageItems.length >= 5) {
+    if (heroCollageItems.length >= HERO_COLLAGE_LIMIT) {
       break;
     }
   }
 
-  while (heroCollageItems.length < 5) {
+  if (heroCollageItems.length < HERO_COLLAGE_LIMIT) {
+    for (const item of featuredItems) {
+      const baseLogoUrl = String(item?.game_logo_url || '').trim();
+      const logoUrl = upscaleIgdbHeroImage(baseLogoUrl);
+      const gameName = String(item?.game_name || '').trim() || 'Game';
+      if (!logoUrl) {
+        continue;
+      }
+      heroCollageItems.push({
+        id: `${String(item?.id || item?.slug || gameName)}-repeat-${heroCollageItems.length}`,
+        gameName,
+        logoUrl,
+      });
+      if (heroCollageItems.length >= HERO_COLLAGE_LIMIT) {
+        break;
+      }
+    }
+  }
+
+  while (heroCollageItems.length < HERO_COLLAGE_LIMIT) {
     heroCollageItems.push({
       id: `placeholder-${heroCollageItems.length}`,
       gameName: 'Game',
@@ -198,11 +234,11 @@ export default function LandingPage() {
           <div className="card-glass p-6 text-slate-500">Loading petitions...</div>
         ) : error ? (
           <div className="card-glass p-6 text-amber-700">{error}</div>
-        ) : featured.length === 0 ? (
+        ) : featuredCards.length === 0 ? (
           <div className="card-glass p-6 text-slate-500">No petitions yet. Be the first player to start one.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {featured.map((item) => <PetitionCard key={item.id || item.slug} petition={item} />)}
+            {featuredCards.map((item) => <PetitionCard key={item.id || item.slug} petition={item} />)}
           </div>
         )}
       </section>
