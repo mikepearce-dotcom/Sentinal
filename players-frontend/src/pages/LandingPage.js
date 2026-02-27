@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import PetitionCard from '../components/PetitionCard';
-import { toArray } from '../lib/community';
+import { formatNumber, toArray } from '../lib/community';
 import { useAuth } from '../hooks/useAuth';
 
 export default function LandingPage() {
@@ -32,6 +32,42 @@ export default function LandingPage() {
       cancelled = true;
     };
   }, []);
+
+  const heroPreviewSource = toArray(featured)[0] || null;
+  const heroPreviewTitleRaw = String(heroPreviewSource?.title || 'Add More Customisation Options').trim();
+  const heroPreviewTitle = heroPreviewTitleRaw.length > 54
+    ? `${heroPreviewTitleRaw.slice(0, 54).trimEnd()}...`
+    : heroPreviewTitleRaw;
+  const heroPreviewSupporters = Number(heroPreviewSource?.supporter_count || 2184) || 2184;
+  const heroPreviewGoal = Number(heroPreviewSource?.next_milestone || Math.max(heroPreviewSupporters + 316, 2500)) || 2500;
+
+  const heroCollageItems = [];
+  const heroCollageSeen = new Set();
+  for (const item of toArray(featured)) {
+    const logoUrl = String(item?.game_logo_url || '').trim();
+    const gameName = String(item?.game_name || '').trim() || 'Game';
+    const dedupeKey = `${gameName.toLowerCase()}|${logoUrl}`;
+    if (!logoUrl || heroCollageSeen.has(dedupeKey)) {
+      continue;
+    }
+    heroCollageSeen.add(dedupeKey);
+    heroCollageItems.push({
+      id: String(item?.id || item?.slug || dedupeKey),
+      gameName,
+      logoUrl,
+    });
+    if (heroCollageItems.length >= 5) {
+      break;
+    }
+  }
+
+  while (heroCollageItems.length < 5) {
+    heroCollageItems.push({
+      id: `placeholder-${heroCollageItems.length}`,
+      gameName: 'Game',
+      logoUrl: '',
+    });
+  }
 
   return (
     <main>
@@ -74,6 +110,21 @@ export default function LandingPage() {
 
           <div className="hero-panel hero-panel-visual p-4 md:p-5">
             <div className="hero-visual hero-petition-preview-wrap">
+              <div className="hero-collage" aria-hidden="true">
+                {heroCollageItems.map((item, index) => (
+                  <div
+                    key={item.id}
+                    className={`hero-collage-slice hero-collage-slice-${index + 1} ${item.logoUrl ? '' : 'hero-collage-slice-fallback'}`.trim()}
+                  >
+                    {item.logoUrl ? (
+                      <img src={item.logoUrl} alt="" className="hero-collage-image" loading="lazy" />
+                    ) : (
+                      <span className="hero-collage-fallback-text">{item.gameName}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
               <div className="hero-pulse-orb hero-pulse-orb-a" />
               <div className="hero-pulse-orb hero-pulse-orb-b" />
               <div className="hero-pulse-orb hero-pulse-orb-c" />
@@ -83,17 +134,17 @@ export default function LandingPage() {
 
               <div className="hero-petition-preview card-glass">
                 <p className="hero-petition-label">Petition Title</p>
-                <h3 className="hero-petition-title">Add More Customisation Options</h3>
+                <h3 className="hero-petition-title">{heroPreviewTitle}</h3>
 
                 <div className="hero-petition-supporters-row">
-                  <p className="hero-petition-supporters">2,184 supporters</p>
+                  <p className="hero-petition-supporters">{formatNumber(heroPreviewSupporters)} supporters</p>
                   <span className="hero-petition-status">Rising</span>
                 </div>
 
                 <div className="hero-petition-progress-wrap" aria-hidden="true">
                   <div className="hero-petition-progress-fill" />
                 </div>
-                <p className="hero-petition-goal">Next goal: 2,500 supporters</p>
+                <p className="hero-petition-goal">Next goal: {formatNumber(heroPreviewGoal)} supporters</p>
 
                 <button type="button" className="hero-petition-cta">Back This Petition</button>
               </div>
