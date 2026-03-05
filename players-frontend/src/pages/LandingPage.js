@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { CheckCircle2 } from 'lucide-react';
 import api from '../api/axios';
 import PetitionCard from '../components/PetitionCard';
-import { formatNumber, toArray } from '../lib/community';
+import { toArray } from '../lib/community';
 import { useAuth } from '../hooks/useAuth';
 
 const HERO_CARD_LIMIT = 6;
@@ -53,26 +54,19 @@ export default function LandingPage() {
     };
   }, []);
 
-  const heroPreviewSource = toArray(featured)[0] || null;
-  const heroPreviewTitleRaw = String(heroPreviewSource?.title || 'Add More Customisation Options').trim();
-  const heroPreviewTitle = heroPreviewTitleRaw.length > 54
-    ? `${heroPreviewTitleRaw.slice(0, 54).trimEnd()}...`
-    : heroPreviewTitleRaw;
-  const heroPreviewSupporters = Number(heroPreviewSource?.supporter_count || 2184) || 2184;
-  const heroPreviewGoal = Number(heroPreviewSource?.next_milestone || Math.max(heroPreviewSupporters + 316, 2500)) || 2500;
   const featuredCards = toArray(featured).slice(0, HERO_CARD_LIMIT);
   const heroUsps = [
     {
       title: 'Clear ideas',
-      copy: 'One focused change per petition so players know exactly what they are backing.',
+      copy: 'One focused change per petition so players know what they are backing.',
     },
     {
       title: 'Real momentum',
-      copy: 'Track supporters, build visible traction, and push the same request forward together.',
+      copy: 'Track supporters, hit visible goals, and share progress.',
     },
     {
       title: 'Rising requests',
-      copy: 'The most backed ideas climb higher, get shared faster, and stay in front of more players.',
+      copy: 'The most backed ideas climb higher and get seen faster.',
     },
   ];
 
@@ -128,91 +122,58 @@ export default function LandingPage() {
 
   return (
     <main>
-      <section className="hero-band">
+      <section className="community-hero">
         <div className="hero-collage hero-collage-stage" aria-hidden="true">
-            <div className={`hero-collage-base ${heroBackdropImage ? '' : 'hero-collage-base-fallback'}`.trim()}>
-              {heroBackdropImage ? (
-                <img src={heroBackdropImage} alt="" className="hero-collage-base-image" loading="lazy" />
-              ) : null}
-            </div>
+          <div className={`hero-collage-base ${heroBackdropImage ? '' : 'hero-collage-base-fallback'}`.trim()}>
+            {heroBackdropImage ? (
+              <img src={heroBackdropImage} alt="" className="hero-collage-base-image" loading="lazy" />
+            ) : null}
+          </div>
 
-            {heroCollageItems.map((item, index) => (
-              <div
-                key={item.id}
-                className={`hero-collage-slice hero-collage-slice-${index + 1} ${item.logoUrl ? '' : 'hero-collage-slice-fallback'}`.trim()}
-              >
-                {item.logoUrl ? (
-                  <img src={item.logoUrl} alt="" className="hero-collage-image" loading="lazy" />
-                ) : (
-                  <span className="hero-collage-fallback-text">{item.gameName}</span>
-                )}
-              </div>
-            ))}
+          {heroCollageItems.map((item, index) => (
+            <div
+              key={item.id}
+              className={`hero-collage-slice hero-collage-slice-${index + 1} ${item.logoUrl ? '' : 'hero-collage-slice-fallback'}`.trim()}
+            >
+              {item.logoUrl ? (
+                <img src={item.logoUrl} alt="" className="hero-collage-image" loading="lazy" />
+              ) : (
+                <span className="hero-collage-fallback-text">{item.gameName}</span>
+              )}
+            </div>
+          ))}
         </div>
 
-        <div className="hero-band-wash" aria-hidden="true" />
+        <div className="community-hero-overlay" aria-hidden="true" />
 
-        <div className="page-shell pt-8 md:pt-12 hero-shell">
-          <div className="hero-grid">
-            <div className="hero-panel hero-panel-main p-6 md:p-8 xl:p-10">
-              <p className="section-eyebrow">Backed by players</p>
-              <h1 className="hero-title text-4xl md:text-6xl leading-[0.95] mt-4 max-w-3xl">
-                Make game changes happen.
-              </h1>
-              <p className="hero-subtitle mt-5 text-base md:text-lg leading-relaxed max-w-2xl">
-                Start a petition, rally players behind one clear idea, and build real momentum.
-                When enough players back the same request, it rises to the top.
-              </p>
+        <div className="page-shell community-hero-shell">
+          <div className="community-hero-content">
+            <p className="community-hero-eyebrow">BACKED BY PLAYERS</p>
+            <h1 className="community-hero-title">Make game changes happen.</h1>
+            <p className="community-hero-subtitle">
+              Start a petition, rally players behind one clear idea, and build real momentum.
+              When enough players back the same request, it rises to the top.
+            </p>
 
-              <div className="mt-7 flex flex-wrap gap-3 hero-cta-row">
-                <Link to={user ? '/petitions/new' : '/signup'} className="btn-primary hero-cta-primary px-5 py-3 text-sm md:text-base">
-                  <span>Start a Petition</span>
-                </Link>
-                <Link to="/petitions" className="btn-secondary px-5 py-3 text-sm md:text-base font-semibold">
-                  Explore Player Requests
-                </Link>
-              </div>
-
-              <ul className="hero-usp-list mt-8" aria-label="Why players use petitions">
-                {heroUsps.map((item) => (
-                  <li key={item.title} className="hero-usp-item">
-                    <span className="hero-usp-bullet" aria-hidden="true" />
-                    <div>
-                      <p className="hero-usp-title">{item.title}</p>
-                      <p className="hero-usp-copy">{item.copy}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+            <div className="community-hero-cta-row">
+              <Link to={user ? '/petitions/new' : '/signup'} className="community-hero-cta community-hero-cta-primary">
+                Start a Petition
+              </Link>
+              <Link to="/petitions" className="community-hero-cta community-hero-cta-secondary">
+                Explore Player Requests
+              </Link>
             </div>
 
-            <div className="hero-panel hero-panel-visual p-4 md:p-5">
-              <div className="hero-petition-preview-wrap">
-                <div className="hero-pulse-orb hero-pulse-orb-a" />
-                <div className="hero-pulse-orb hero-pulse-orb-b" />
-                <div className="hero-pulse-orb hero-pulse-orb-c" />
-
-                <div className="hero-petition-chip hero-petition-chip-a">Trending idea</div>
-                <div className="hero-petition-chip hero-petition-chip-b">Backed by players</div>
-
-                <div className="hero-petition-preview card-glass">
-                  <p className="hero-petition-label">Petition Title</p>
-                  <h3 className="hero-petition-title">{heroPreviewTitle}</h3>
-
-                  <div className="hero-petition-supporters-row">
-                    <p className="hero-petition-supporters">{formatNumber(heroPreviewSupporters)} supporters</p>
-                    <span className="hero-petition-status">Rising</span>
-                  </div>
-
-                  <div className="hero-petition-progress-wrap" aria-hidden="true">
-                    <div className="hero-petition-progress-fill" />
-                  </div>
-                  <p className="hero-petition-goal">Next goal: {formatNumber(heroPreviewGoal)} supporters</p>
-
-                  <button type="button" className="hero-petition-cta">Back This Petition</button>
-                </div>
-              </div>
-            </div>
+            <ul className="community-hero-usp-list" aria-label="Why players use petitions">
+              {heroUsps.map((item) => (
+                <li key={item.title} className="community-hero-usp-item">
+                  <CheckCircle2 className="community-hero-usp-icon" aria-hidden="true" />
+                  <p className="community-hero-usp-text">
+                    <strong>{item.title}:</strong> {item.copy}
+                  </p>
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       </section>
@@ -273,7 +234,4 @@ export default function LandingPage() {
     </main>
   );
 }
-
-
-
 
