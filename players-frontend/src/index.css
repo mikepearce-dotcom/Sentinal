@@ -454,27 +454,27 @@ a:focus-visible {
   opacity: 0.92;
 }
 
-.hero-collage-slice:nth-child(1) {
+.hero-collage-slice-1 {
   left: -5%;
   transform: rotate(-12deg);
 }
 
-.hero-collage-slice:nth-child(2) {
+.hero-collage-slice-2 {
   left: 14%;
   transform: rotate(-9deg);
 }
 
-.hero-collage-slice:nth-child(3) {
+.hero-collage-slice-3 {
   left: 34%;
   transform: rotate(-6deg);
 }
 
-.hero-collage-slice:nth-child(4) {
+.hero-collage-slice-4 {
   left: 54%;
   transform: rotate(-3deg);
 }
 
-.hero-collage-slice:nth-child(5) {
+.hero-collage-slice-5 {
   left: 74%;
   transform: rotate(0deg);
 }
@@ -818,11 +818,11 @@ a:focus-visible {
     bottom: -6%;
   }
 
-  .hero-collage-slice:nth-child(1) { left: -12%; }
-  .hero-collage-slice:nth-child(2) { left: 8%; }
-  .hero-collage-slice:nth-child(3) { left: 28%; }
-  .hero-collage-slice:nth-child(4) { left: 48%; }
-  .hero-collage-slice:nth-child(5) { left: 68%; }
+  .hero-collage-slice-1 { left: -12%; }
+  .hero-collage-slice-2 { left: 8%; }
+  .hero-collage-slice-3 { left: 28%; }
+  .hero-collage-slice-4 { left: 48%; }
+  .hero-collage-slice-5 { left: 68%; }
 
   .hero-petition-preview {
     width: calc(100% - 1rem);
@@ -952,7 +952,7 @@ a:focus-visible {
   z-index: 1;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(248, 250, 252, 0.9) 8%, rgba(248, 250, 252, 0.76) 34%, rgba(248, 250, 252, 0.38) 58%, rgba(248, 250, 252, 0.72) 100%),
+    linear-gradient(104deg, rgba(248, 250, 252, 0.8) 8%, rgba(248, 250, 252, 0.62) 34%, rgba(248, 250, 252, 0.24) 58%, rgba(248, 250, 252, 0.66) 100%),
     radial-gradient(circle at 84% 16%, rgba(125, 211, 252, 0.14), transparent 30%),
     radial-gradient(circle at 76% 78%, rgba(167, 139, 250, 0.12), transparent 36%);
 }
@@ -979,7 +979,7 @@ a:focus-visible {
 }
 
 .hero-collage-stage .hero-collage-slice {
-  opacity: 0.46;
+  opacity: 0.4;
   border-color: rgba(255, 255, 255, 0.32);
   box-shadow: 0 14px 26px rgba(15, 23, 42, 0.08);
 }
@@ -1057,7 +1057,7 @@ a:focus-visible {
   }
 
   .hero-stage::before {
-    background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(248, 250, 252, 0.76) 42%, rgba(248, 250, 252, 0.84));
+    background: linear-gradient(180deg, rgba(248, 250, 252, 0.82), rgba(248, 250, 252, 0.58) 42%, rgba(248, 250, 252, 0.78));
   }
 
   .hero-collage-stage .hero-collage-slice {
@@ -1085,6 +1085,11 @@ a:focus-visible {
     transition: none !important;
   }
 }
+
+
+
+
+
 
 
 

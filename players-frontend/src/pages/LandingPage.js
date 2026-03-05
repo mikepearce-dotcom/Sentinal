@@ -124,11 +124,19 @@ export default function LandingPage() {
     });
   }
 
+  const heroBackdropImage = heroCollageItems.find((item) => item.logoUrl)?.logoUrl || '';
+
   return (
     <main>
       <section className="page-shell pt-8 md:pt-12">
         <div className="hero-stage">
           <div className="hero-collage hero-collage-stage" aria-hidden="true">
+            <div className={`hero-collage-base ${heroBackdropImage ? '' : 'hero-collage-base-fallback'}`.trim()}>
+              {heroBackdropImage ? (
+                <img src={heroBackdropImage} alt="" className="hero-collage-base-image" loading="lazy" />
+              ) : null}
+            </div>
+
             {heroCollageItems.map((item, index) => (
               <div
                 key={item.id}
@@ -263,3 +271,5 @@ export default function LandingPage() {
     </main>
   );
 }
+
+
