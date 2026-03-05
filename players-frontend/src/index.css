@@ -1187,3 +1187,26 @@ a:focus-visible {
   .hero-collage-slice-5 { left: 68%; }
 }
 
+/* Hero clarity overrides */
+.hero-collage-stage::after {
+  display: none;
+}
+
+.hero-collage-base::after {
+  display: none;
+}
+
+.hero-collage-base-image {
+  transform: scale(1.03);
+  filter: saturate(1.15) contrast(1.1);
+}
+
+.hero-collage-stage .hero-collage-slice {
+  opacity: 0.5;
+}
+
+@media (max-width: 767px) {
+  .hero-collage-stage .hero-collage-slice {
+    opacity: 0.36;
+  }
+}
