@@ -128,9 +128,8 @@ export default function LandingPage() {
 
   return (
     <main>
-      <section className="page-shell pt-8 md:pt-12">
-        <div className="hero-stage">
-          <div className="hero-collage hero-collage-stage" aria-hidden="true">
+      <section className="hero-band">
+        <div className="hero-collage hero-collage-stage" aria-hidden="true">
             <div className={`hero-collage-base ${heroBackdropImage ? '' : 'hero-collage-base-fallback'}`.trim()}>
               {heroBackdropImage ? (
                 <img src={heroBackdropImage} alt="" className="hero-collage-base-image" loading="lazy" />
@@ -149,8 +148,11 @@ export default function LandingPage() {
                 )}
               </div>
             ))}
-          </div>
+        </div>
 
+        <div className="hero-band-wash" aria-hidden="true" />
+
+        <div className="page-shell pt-8 md:pt-12 hero-shell">
           <div className="hero-grid">
             <div className="hero-panel hero-panel-main p-6 md:p-8 xl:p-10">
               <p className="section-eyebrow">Backed by players</p>
@@ -271,5 +273,7 @@ export default function LandingPage() {
     </main>
   );
 }
+
+
 
 

@@ -392,33 +392,6 @@ a:focus-visible {
   transform: scale(1.03);
 }
 
-.hero-visual {
-  position: relative;
-  width: min(520px, 100%);
-  aspect-ratio: 1;
-  margin: 0 auto;
-  border-radius: 22px;
-  overflow: hidden;
-  border: 1px solid rgba(99, 102, 241, 0.12);
-  background:
-    radial-gradient(circle at 18% 14%, rgba(59, 130, 246, 0.14), transparent 44%),
-    radial-gradient(circle at 78% 18%, rgba(139, 92, 246, 0.13), transparent 52%),
-    radial-gradient(circle at 66% 78%, rgba(6, 182, 212, 0.10), transparent 46%),
-    linear-gradient(165deg, rgba(255, 255, 255, 0.95), rgba(248, 251, 255, 0.88));
-}
-
-.hero-visual::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
-  background-size: 28px 28px;
-  opacity: 0.55;
-  z-index: 1;
-}
-
 .hero-petition-preview-wrap {
   display: flex;
   align-items: center;
@@ -1093,3 +1066,134 @@ a:focus-visible {
 
 
 
+
+
+
+
+
+
+
+/* Hero full-bleed overrides */
+.community-shell::before {
+  background-image:
+    radial-gradient(circle at 18% 18%, rgba(14, 165, 233, 0.08), transparent 36%),
+    radial-gradient(circle at 82% 10%, rgba(20, 184, 166, 0.08), transparent 38%),
+    radial-gradient(circle at 68% 88%, rgba(99, 102, 241, 0.06), transparent 34%);
+  background-size: auto;
+  mask-image: radial-gradient(circle at center, black, rgba(0, 0, 0, 0.22));
+}
+
+.hero-band {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.hero-band-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(104deg, rgba(248, 250, 252, 0.86) 8%, rgba(248, 250, 252, 0.64) 34%, rgba(248, 250, 252, 0.26) 58%, rgba(248, 250, 252, 0.7) 100%),
+    radial-gradient(circle at 84% 16%, rgba(125, 211, 252, 0.14), transparent 30%),
+    radial-gradient(circle at 76% 78%, rgba(167, 139, 250, 0.12), transparent 36%);
+}
+
+.hero-shell {
+  position: relative;
+  z-index: 2;
+}
+
+.hero-collage-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.hero-collage-base {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.hero-collage-base::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(118deg, rgba(15, 23, 42, 0.42) 0%, rgba(15, 23, 42, 0.16) 44%, rgba(15, 23, 42, 0.38) 100%),
+    radial-gradient(circle at 88% 16%, rgba(125, 211, 252, 0.2), transparent 35%);
+}
+
+.hero-collage-base-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.06);
+  filter: saturate(1.12) contrast(1.08);
+}
+
+.hero-collage-base-fallback {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(139, 92, 246, 0.16), rgba(6, 182, 212, 0.14));
+}
+
+.hero-collage-stage .hero-collage-slice {
+  opacity: 0.4;
+  border-color: rgba(255, 255, 255, 0.32);
+  box-shadow: 0 14px 26px rgba(15, 23, 42, 0.08);
+}
+
+.hero-collage-slice-1 {
+  left: -5%;
+  transform: rotate(-12deg);
+}
+
+.hero-collage-slice-2 {
+  left: 14%;
+  transform: rotate(-9deg);
+}
+
+.hero-collage-slice-3 {
+  left: 34%;
+  transform: rotate(-6deg);
+}
+
+.hero-collage-slice-4 {
+  left: 54%;
+  transform: rotate(-3deg);
+}
+
+.hero-collage-slice-5 {
+  left: 74%;
+  transform: rotate(0deg);
+}
+
+@media (max-width: 767px) {
+  .hero-band-wash {
+    background: linear-gradient(180deg, rgba(248, 250, 252, 0.82), rgba(248, 250, 252, 0.58) 42%, rgba(248, 250, 252, 0.78));
+  }
+
+  .hero-collage-stage .hero-collage-slice {
+    opacity: 0.28;
+  }
+
+  .hero-petition-preview-wrap {
+    min-height: 340px;
+  }
+}
+
+@media (max-width: 640px) {
+  .hero-collage-slice {
+    width: 34%;
+    top: -6%;
+    bottom: -6%;
+  }
+
+  .hero-collage-slice-1 { left: -12%; }
+  .hero-collage-slice-2 { left: 8%; }
+  .hero-collage-slice-3 { left: 28%; }
+  .hero-collage-slice-4 { left: 48%; }
+  .hero-collage-slice-5 { left: 68%; }
+}
