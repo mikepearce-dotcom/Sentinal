@@ -1091,14 +1091,7 @@ a:focus-visible {
 }
 
 .hero-band-wash {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background:
-    linear-gradient(104deg, rgba(248, 250, 252, 0.86) 8%, rgba(248, 250, 252, 0.64) 34%, rgba(248, 250, 252, 0.26) 58%, rgba(248, 250, 252, 0.7) 100%),
-    radial-gradient(circle at 84% 16%, rgba(125, 211, 252, 0.14), transparent 30%),
-    radial-gradient(circle at 76% 78%, rgba(167, 139, 250, 0.12), transparent 36%);
+  display: none;
 }
 
 .hero-shell {
@@ -1171,10 +1164,6 @@ a:focus-visible {
 }
 
 @media (max-width: 767px) {
-  .hero-band-wash {
-    background: linear-gradient(180deg, rgba(248, 250, 252, 0.82), rgba(248, 250, 252, 0.58) 42%, rgba(248, 250, 252, 0.78));
-  }
-
   .hero-collage-stage .hero-collage-slice {
     opacity: 0.28;
   }
@@ -1197,3 +1186,4 @@ a:focus-visible {
   .hero-collage-slice-4 { left: 48%; }
   .hero-collage-slice-5 { left: 68%; }
 }
+
