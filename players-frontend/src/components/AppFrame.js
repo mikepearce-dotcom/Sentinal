@@ -21,8 +21,8 @@ export default function AppFrame({ children }) {
       <header className="community-header sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex items-center justify-between gap-4">
           <Link to="/" className="flex items-center gap-3 min-w-0">
-            <span className="w-9 h-9 rounded-xl border border-sky-200 bg-white shadow-sm flex items-center justify-center">
-              <span className="w-4 h-4 rounded-full bg-gradient-to-br from-sky-500 to-teal-400" />
+            <span className="w-9 h-9 rounded-xl border border-violet-300/35 bg-slate-900/70 shadow-sm flex items-center justify-center">
+              <span className="w-4 h-4 rounded-full bg-gradient-to-br from-violet-400 to-cyan-300" />
             </span>
             <span className="min-w-0">
               <span className="block font-heading text-xl md:text-2xl font-bold tracking-tight text-slate-900">Sentient Community</span>
@@ -47,7 +47,7 @@ export default function AppFrame({ children }) {
                   {user.avatar_url ? (
                     <img src={user.avatar_url} alt={displayName} className="w-7 h-7 rounded-full object-cover" />
                   ) : (
-                    <span className="w-7 h-7 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center text-xs font-bold">
+                    <span className="w-7 h-7 rounded-full bg-violet-500/25 text-violet-200 flex items-center justify-center text-xs font-bold">
                       {userInitial}
                     </span>
                   )}
@@ -86,7 +86,7 @@ export default function AppFrame({ children }) {
                   {user.avatar_url ? (
                     <img src={user.avatar_url} alt={displayName} className="w-9 h-9 rounded-full object-cover" />
                   ) : (
-                    <span className="w-9 h-9 rounded-full bg-sky-100 text-sky-700 flex items-center justify-center text-sm font-bold">
+                    <span className="w-9 h-9 rounded-full bg-violet-500/25 text-violet-200 flex items-center justify-center text-sm font-bold">
                       {userInitial}
                     </span>
                   )}
@@ -129,3 +129,4 @@ export default function AppFrame({ children }) {
     </div>
   );
 }
+

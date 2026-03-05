@@ -15,7 +15,7 @@ export default function PetitionCard({ petition }) {
           <div className="min-w-0">
             <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-500 truncate">{item.game_name || 'Unknown Game'}</p>
             <Link to={`/petitions/${item.slug || item.id}`} className="block mt-2">
-              <h3 className="font-heading text-2xl font-bold text-slate-900 leading-tight hover:text-sky-700 transition-colors">
+              <h3 className="font-heading text-2xl font-bold text-slate-900 leading-tight hover:text-violet-300 transition-colors">
                 {item.title || 'Untitled petition'}
               </h3>
             </Link>
@@ -53,3 +53,4 @@ export default function PetitionCard({ petition }) {
     </article>
   );
 }
+
