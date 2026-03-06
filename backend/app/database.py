@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -7,45 +7,67 @@ client: Optional[AsyncIOMotorClient] = None
 db = None
 
 
+def _env_truthy(value: Optional[str], default: bool = True) -> bool:
+    cleaned = str(value or "").strip().lower()
+    if not cleaned:
+        return default
+    return cleaned in {"1", "true", "yes", "on"}
+
+
+async def _safe_create_index(collection: Any, keys: Any, **kwargs: Any) -> None:
+    index_name = str(kwargs.get("name") or keys)
+    try:
+        await collection.create_index(keys, **kwargs)
+    except Exception as exc:
+        # Non-fatal by design: existing duplicate data can block new unique indexes.
+        print(f"Index create skipped ({index_name}): {type(exc).__name__}: {exc}")
+
+
 async def _ensure_indexes() -> None:
     if db is None:
         return
 
-    await db.users.create_index("user_id", unique=True, name="uniq_users_user_id")
-    await db.users.create_index("email", unique=True, name="uniq_users_email")
-    await db.users.create_index(
+    await _safe_create_index(db.users, "user_id", unique=True, name="uniq_users_user_id")
+    await _safe_create_index(db.users, "email", unique=True, name="uniq_users_email")
+    await _safe_create_index(
+        db.users,
         "auth0_sub",
         unique=True,
         sparse=True,
         name="uniq_users_auth0_sub",
     )
 
-    await db.tracked_games.create_index([("user_id", 1), ("name", 1)], name="idx_tracked_games_user_name")
+    await _safe_create_index(db.tracked_games, [("user_id", 1), ("name", 1)], name="idx_tracked_games_user_name")
 
-    await db.scan_results.create_index(
+    await _safe_create_index(
+        db.scan_results,
         [("game_id", 1), ("user_id", 1), ("created_at", -1)],
         name="idx_scan_results_game_user_created",
     )
 
-    await db.community_games.create_index("slug", unique=True, name="uniq_community_games_slug")
-    await db.community_games.create_index("normalized_name", name="idx_community_games_normalized_name")
+    await _safe_create_index(db.community_games, "slug", unique=True, name="uniq_community_games_slug")
+    await _safe_create_index(db.community_games, "normalized_name", name="idx_community_games_normalized_name")
 
-    await db.community_petitions.create_index("slug", unique=True, name="uniq_community_petitions_slug")
-    await db.community_petitions.create_index(
+    await _safe_create_index(db.community_petitions, "slug", unique=True, name="uniq_community_petitions_slug")
+    await _safe_create_index(
+        db.community_petitions,
         [("status", 1), ("last_support_at", -1), ("supporter_count", -1), ("created_at", -1)],
         name="idx_community_petitions_status_momentum",
     )
-    await db.community_petitions.create_index(
+    await _safe_create_index(
+        db.community_petitions,
         [("created_by_user_id", 1), ("created_at", -1)],
         name="idx_community_petitions_creator_created",
     )
 
-    await db.community_petition_signatures.create_index(
+    await _safe_create_index(
+        db.community_petition_signatures,
         [("petition_id", 1), ("user_id", 1)],
         unique=True,
         name="uniq_community_signatures_petition_user",
     )
-    await db.community_petition_signatures.create_index(
+    await _safe_create_index(
+        db.community_petition_signatures,
         [("petition_id", 1), ("created_at", -1)],
         name="idx_community_signatures_petition_created",
     )
@@ -57,7 +79,10 @@ async def connect_to_mongo():
     db_name = os.getenv("DB_NAME", "sentient_tracker")
     client = AsyncIOMotorClient(mongo_url)
     db = client[db_name]
-    await _ensure_indexes()
+
+    if _env_truthy(os.getenv("DB_AUTO_INDEXES"), default=True):
+        await _ensure_indexes()
+
     print("Connected to MongoDB")
 
 
