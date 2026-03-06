@@ -9,16 +9,18 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from pymongo.errors import DuplicateKeyError
 
 from .. import database
 from ..security import allow_request, client_ip, parse_int_env
-from .auth import get_current_user
+from .auth import get_current_player_user
 
 router = APIRouter()
 
 COMMUNITY_CREATE_RATE_LIMIT = parse_int_env(os.getenv("COMMUNITY_CREATE_RATE_LIMIT"), default=15)
 COMMUNITY_SUPPORT_RATE_LIMIT = parse_int_env(os.getenv("COMMUNITY_SUPPORT_RATE_LIMIT"), default=120)
 COMMUNITY_WINDOW_SECONDS = parse_int_env(os.getenv("COMMUNITY_RATE_WINDOW_SECONDS"), default=300)
+COMMUNITY_INCLUDE_TRACKED_SUGGESTIONS = str(os.getenv("COMMUNITY_INCLUDE_TRACKED_SUGGESTIONS", "true") or "true").strip().lower() in {"1", "true", "yes", "on"}
 
 IGDB_TWITCH_CLIENT_ID = str(os.getenv("IGDB_TWITCH_CLIENT_ID") or "").strip()
 IGDB_TWITCH_CLIENT_SECRET = str(os.getenv("IGDB_TWITCH_CLIENT_SECRET") or "").strip()
@@ -1073,7 +1075,7 @@ async def search_community_games(
             )
         )
 
-    if len(results) < limit:
+    if COMMUNITY_INCLUDE_TRACKED_SUGGESTIONS and len(results) < limit:
         tracked_query = {"name": {"$regex": re.escape(query_text), "$options": "i"}} if query_text else {}
         cursor = tracked_games.find(tracked_query, {"name": 1}).limit(limit * 2)
         async for row in cursor:
@@ -1116,7 +1118,7 @@ async def search_community_games(
 
 
 @router.post("/games", response_model=CommunityGameOut)
-async def create_community_game(payload: CommunityGameCreateIn, request: Request, user=Depends(get_current_user)):
+async def create_community_game(payload: CommunityGameCreateIn, request: Request, user=Depends(get_current_player_user)):
     _ensure_rate_limit("create_game", request, COMMUNITY_CREATE_RATE_LIMIT)
     game_doc = await _ensure_community_game("", payload.name, user)
     return CommunityGameOut(
@@ -1161,7 +1163,7 @@ async def list_petitions(
 
 
 @router.get("/petitions/mine", response_model=CommunityMyPetitionsOut)
-async def my_petitions(user=Depends(get_current_user)):
+async def my_petitions(user=Depends(get_current_player_user)):
     cursor = (
         database.db.community_petitions
         .find({"created_by_user_id": _safe_str(user.get("user_id"))})
@@ -1196,7 +1198,7 @@ async def milestone_candidates(
 
 
 @router.post("/petitions", response_model=CommunityPetitionDetailOut)
-async def create_petition(payload: CommunityPetitionCreateIn, request: Request, user=Depends(get_current_user)):
+async def create_petition(payload: CommunityPetitionCreateIn, request: Request, user=Depends(get_current_player_user)):
     _ensure_rate_limit("create_petition", request, COMMUNITY_CREATE_RATE_LIMIT)
 
     title = _safe_str(payload.title, 160)
@@ -1270,7 +1272,7 @@ async def get_petition(petition_ref: str):
 
 
 @router.get("/petitions/{petition_ref}/support-status", response_model=CommunitySupportStatusOut)
-async def petition_support_status(petition_ref: str, user=Depends(get_current_user)):
+async def petition_support_status(petition_ref: str, user=Depends(get_current_player_user)):
     petition = await _get_petition_by_ref(petition_ref)
     if not petition:
         raise HTTPException(status_code=404, detail="Petition not found")
@@ -1291,7 +1293,7 @@ async def petition_support_status(petition_ref: str, user=Depends(get_current_us
 
 
 @router.post("/petitions/{petition_ref}/support", response_model=CommunitySupportActionOut)
-async def support_petition(petition_ref: str, request: Request, user=Depends(get_current_user)):
+async def support_petition(petition_ref: str, request: Request, user=Depends(get_current_player_user)):
     _ensure_rate_limit("support_petition", request, COMMUNITY_SUPPORT_RATE_LIMIT)
 
     petition = await _get_petition_by_ref(petition_ref)
@@ -1305,12 +1307,15 @@ async def support_petition(petition_ref: str, request: Request, user=Depends(get
     signatures = database.db.community_petition_signatures
     existing = await signatures.find_one({"petition_id": petition_id, "user_id": user_id}, {"_id": 1})
     if not existing:
-        await signatures.insert_one({
-            "_id": str(uuid.uuid4()),
-            "petition_id": petition_id,
-            "user_id": user_id,
-            "created_at": datetime.utcnow(),
-        })
+        try:
+            await signatures.insert_one({
+                "_id": str(uuid.uuid4()),
+                "petition_id": petition_id,
+                "user_id": user_id,
+                "created_at": datetime.utcnow(),
+            })
+        except DuplicateKeyError:
+            pass
 
     refreshed = await _recompute_petition_support_snapshot(petition_id)
     out = _petition_out_from_doc(refreshed)
@@ -1327,7 +1332,7 @@ async def support_petition(petition_ref: str, request: Request, user=Depends(get
 
 
 @router.delete("/petitions/{petition_ref}/support", response_model=CommunitySupportActionOut)
-async def unsupport_petition(petition_ref: str, request: Request, user=Depends(get_current_user)):
+async def unsupport_petition(petition_ref: str, request: Request, user=Depends(get_current_player_user)):
     _ensure_rate_limit("unsupport_petition", request, COMMUNITY_SUPPORT_RATE_LIMIT)
 
     petition = await _get_petition_by_ref(petition_ref)
@@ -1350,3 +1355,4 @@ async def unsupport_petition(petition_ref: str, request: Request, user=Depends(g
         milestone_progress_pct=out.milestone_progress_pct,
         eligible_for_studio_push=out.eligible_for_studio_push,
     )
+

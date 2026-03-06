@@ -4,7 +4,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -78,6 +78,32 @@ AUTH_LOGIN_RATE_LIMIT = parse_int_env(os.getenv("AUTH_LOGIN_RATE_LIMIT"), defaul
 AUTH_SIGNUP_RATE_LIMIT = parse_int_env(os.getenv("AUTH_SIGNUP_RATE_LIMIT"), default=30)
 AUTH_PASSWORD_RESET_RATE_LIMIT = parse_int_env(os.getenv("AUTH_PASSWORD_RESET_RATE_LIMIT"), default=20)
 ACCOUNT_DELETE_ENABLED = env_truthy(os.getenv("ACCOUNT_DELETE_ENABLED"), default=False)
+ENFORCE_ROLE_GUARDS = env_truthy(os.getenv("ENFORCE_ROLE_GUARDS"), default=False)
+AUTH0_ROLE_CLAIM = clean_env(os.getenv("AUTH0_ROLE_CLAIM"))
+if not AUTH0_ROLE_CLAIM and AUTH0_AUDIENCE:
+    AUTH0_ROLE_CLAIM = f"{AUTH0_AUDIENCE.rstrip('/')}/roles"
+
+
+def _parse_role_list(raw: Optional[str], default: List[str]) -> Set[str]:
+    values: Set[str] = set()
+    cleaned = clean_env(raw)
+    source = cleaned.split(",") if cleaned else default
+    for item in source:
+        role = clean_env(str(item or "")).lower()
+        if role:
+            values.add(role)
+    return values
+
+
+STUDIO_ALLOWED_ROLES = _parse_role_list(
+    os.getenv("STUDIO_ALLOWED_ROLES"),
+    ["studio", "admin"],
+)
+PLAYER_ALLOWED_ROLES = _parse_role_list(
+    os.getenv("PLAYER_ALLOWED_ROLES"),
+    ["player", "studio", "admin"],
+)
+
 
 
 def _auth0_enabled() -> bool:
@@ -611,7 +637,9 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         if not user:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        return user
+        hydrated_user = dict(user)
+        hydrated_user["_auth_claims"] = claims
+        return hydrated_user
 
     if not _legacy_auth_enabled():
         raise HTTPException(status_code=503, detail="Authentication misconfigured")
@@ -625,7 +653,72 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     if not user:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    return user
+    hydrated_user = dict(user)
+    hydrated_user["_auth_claims"] = {}
+    return hydrated_user
+
+
+def _extract_roles_from_claims(claims: Dict[str, Any]) -> Set[str]:
+    if not isinstance(claims, dict):
+        return set()
+
+    role_values: Set[str] = set()
+
+    def _add(raw: Any) -> None:
+        if isinstance(raw, list):
+            for item in raw:
+                role = clean_env(str(item or "")).lower()
+                if role:
+                    role_values.add(role)
+            return
+        if isinstance(raw, str):
+            for item in raw.split(","):
+                role = clean_env(item).lower()
+                if role:
+                    role_values.add(role)
+
+    _add(claims.get("roles"))
+    if AUTH0_ROLE_CLAIM:
+        _add(claims.get(AUTH0_ROLE_CLAIM))
+
+    return role_values
+
+
+def _extract_user_roles(user: Dict[str, Any]) -> Set[str]:
+    if not isinstance(user, dict):
+        return set()
+
+    roles: Set[str] = set()
+
+    for role_key in ("roles", "role"):
+        raw = user.get(role_key)
+        if isinstance(raw, list):
+            for item in raw:
+                role = clean_env(str(item or "")).lower()
+                if role:
+                    roles.add(role)
+        elif isinstance(raw, str):
+            for item in raw.split(","):
+                role = clean_env(item).lower()
+                if role:
+                    roles.add(role)
+
+    claims = user.get("_auth_claims")
+    if isinstance(claims, dict):
+        roles.update(_extract_roles_from_claims(claims))
+
+    return roles
+
+
+def _require_role(user: Dict[str, Any], allowed_roles: Set[str], role_label: str) -> Dict[str, Any]:
+    if not ENFORCE_ROLE_GUARDS:
+        return user
+
+    user_roles = _extract_user_roles(user)
+    if user_roles.intersection(allowed_roles):
+        return user
+
+    raise HTTPException(status_code=403, detail=f"Forbidden: {role_label} role required")
 
 
 @router.post("/password-reset-request")
@@ -764,3 +857,11 @@ async def delete_account(user=Depends(get_current_user)):
 @router.post("/logout")
 async def logout():
     return {"message": "logged out"}
+
+
+async def get_current_studio_user(user=Depends(get_current_user)):
+    return _require_role(user, STUDIO_ALLOWED_ROLES, "studio")
+
+
+async def get_current_player_user(user=Depends(get_current_user)):
+    return _require_role(user, PLAYER_ALLOWED_ROLES, "player")

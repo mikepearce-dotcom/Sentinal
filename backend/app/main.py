@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, Response
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .database import close_mongo_connection, connect_to_mongo
 from .routes import auth, community, games, scans
@@ -11,6 +12,13 @@ app = FastAPI(title="Sentient Tracker API")
 
 ALLOWED_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 ALLOWED_HEADERS = "Content-Type, Authorization"
+SECURITY_HEADERS: Dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cache-Control": "no-store",
+}
 
 
 def _normalize_origin(value: Optional[str]) -> str:
@@ -49,6 +57,22 @@ def _parse_cors_origins(raw_value: Optional[str]) -> List[str]:
     return origins
 
 
+def _parse_allowed_hosts(raw_value: Optional[str]) -> List[str]:
+    cleaned = str(raw_value or "").strip()
+    if not cleaned:
+        return ["*"]
+
+    hosts: List[str] = []
+    for part in cleaned.split(","):
+        host = str(part or "").strip().lower()
+        if not host:
+            continue
+        if host not in hosts:
+            hosts.append(host)
+
+    return hosts or ["*"]
+
+
 def _build_cors_headers(origin: str) -> Dict[str, str]:
     return {
         "Access-Control-Allow-Origin": origin,
@@ -67,7 +91,12 @@ default_origins = [
 allowed_origins = configured_origins or default_origins
 allowed_origin_set = set(allowed_origins)
 
+allowed_hosts = _parse_allowed_hosts(environ.get("ALLOWED_HOSTS"))
+if allowed_hosts != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
 print("CORS allowlist: {}".format(allowed_origins))
+print("Host allowlist: {}".format(allowed_hosts))
 
 
 @app.middleware("http")
@@ -79,13 +108,20 @@ async def cors_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         if not is_allowed_origin:
             return Response(status_code=403)
-        return Response(status_code=204, headers=_build_cors_headers(request_origin))
+        response = Response(status_code=204, headers=_build_cors_headers(normalized_request_origin))
+        for key, value in SECURITY_HEADERS.items():
+            response.headers[key] = value
+        return response
 
     response = await call_next(request)
 
     if is_allowed_origin:
-        headers = _build_cors_headers(request_origin)
+        headers = _build_cors_headers(normalized_request_origin)
         for key, value in headers.items():
+            response.headers[key] = value
+
+    for key, value in SECURITY_HEADERS.items():
+        if key not in response.headers:
             response.headers[key] = value
 
     return response

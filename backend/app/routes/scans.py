@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from .. import database, services
 from ..models import ScanCompareOut, ScanResultDetailOut, ScanResultOut, ScanTrendPointOut, ScanTrendsOut
 from ..security import allow_request, client_ip, parse_int_env
-from .auth import get_current_user
+from .auth import get_current_studio_user
 
 router = APIRouter()
 
@@ -1155,7 +1155,7 @@ def _parse_window_days(window: str) -> int:
 
 
 @router.post("/multi-scan")
-async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depends(get_current_user)):
+async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depends(get_current_studio_user)):
     _enforce_scan_rate_limit(request, user["user_id"], scope="multi")
 
     if not payload.subreddits:
@@ -1223,7 +1223,7 @@ async def run_multi_scan(payload: MultiScanRequest, request: Request, user=Depen
 
 
 @router.post("/{id}/scan")
-async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
+async def run_scan(id: str, request: Request, user=Depends(get_current_studio_user)):
     _enforce_scan_rate_limit(request, user["user_id"], scope="single")
 
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
@@ -1289,7 +1289,7 @@ async def run_scan(id: str, request: Request, user=Depends(get_current_user)):
 
 
 @router.get("/{id}/results", response_model=List[ScanResultOut])
-async def list_results(id: str, user=Depends(get_current_user)):
+async def list_results(id: str, user=Depends(get_current_studio_user)):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1306,7 +1306,7 @@ async def compare_results(
     id: str,
     from_result_id: Optional[str] = None,
     to_result_id: Optional[str] = None,
-    user=Depends(get_current_user),
+    user=Depends(get_current_studio_user),
 ):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
@@ -1366,7 +1366,7 @@ async def scan_trends(
     id: str,
     window: str = "30d",
     limit: int = 120,
-    user=Depends(get_current_user),
+    user=Depends(get_current_studio_user),
 ):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
@@ -1442,7 +1442,7 @@ async def scan_trends(
 
 
 @router.get("/{id}/results/{result_id}/detail", response_model=ScanResultDetailOut)
-async def result_detail(id: str, result_id: str, user=Depends(get_current_user)):
+async def result_detail(id: str, result_id: str, user=Depends(get_current_studio_user)):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1457,7 +1457,7 @@ async def result_detail(id: str, result_id: str, user=Depends(get_current_user))
 
 
 @router.get("/{id}/latest-result", response_model=ScanResultOut)
-async def latest_result(id: str, user=Depends(get_current_user)):
+async def latest_result(id: str, user=Depends(get_current_studio_user)):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1472,7 +1472,7 @@ async def latest_result(id: str, user=Depends(get_current_user)):
 
 
 @router.get("/{id}/latest-result-detail", response_model=ScanResultDetailOut)
-async def latest_result_detail(id: str, user=Depends(get_current_user)):
+async def latest_result_detail(id: str, user=Depends(get_current_studio_user)):
     game = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -1484,3 +1484,4 @@ async def latest_result_detail(id: str, user=Depends(get_current_user)):
     if not r:
         raise HTTPException(status_code=404, detail="No scan results yet")
     return _scan_detail_out_from_doc(r)
+

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .. import database, services
 from ..models import Game, GameCreate
-from .auth import get_current_user
+from .auth import get_current_studio_user
 
 router = APIRouter()
 
@@ -23,7 +23,7 @@ def _game_from_doc(doc: Dict[str, Any]) -> Game:
 
 
 @router.get("", response_model=List[Game])
-async def list_games(user=Depends(get_current_user)):
+async def list_games(user=Depends(get_current_studio_user)):
     cursor = database.db.tracked_games.find({"user_id": user["user_id"]})
     games: List[Game] = []
     async for g in cursor:
@@ -32,7 +32,7 @@ async def list_games(user=Depends(get_current_user)):
 
 
 @router.post("", response_model=Game)
-async def add_game(game: GameCreate, user=Depends(get_current_user)):
+async def add_game(game: GameCreate, user=Depends(get_current_studio_user)):
     doc = game.dict()
     doc["user_id"] = user["user_id"]
     doc["created_at"] = datetime.utcnow()
@@ -46,7 +46,7 @@ async def add_game(game: GameCreate, user=Depends(get_current_user)):
 async def discover_subreddits(
     game_name: str = Query(..., min_length=1),
     max_results: int = Query(5, ge=1, le=10),
-    user=Depends(get_current_user),
+    user=Depends(get_current_studio_user),
 ):
     try:
         results = await services.discover_subreddits_for_game(
@@ -60,7 +60,7 @@ async def discover_subreddits(
 
 
 @router.get("/{id}", response_model=Game)
-async def get_game(id: str, user=Depends(get_current_user)):
+async def get_game(id: str, user=Depends(get_current_studio_user)):
     g = await database.db.tracked_games.find_one({"_id": id, "user_id": user["user_id"]})
     if not g:
         raise HTTPException(status_code=404)
@@ -68,7 +68,7 @@ async def get_game(id: str, user=Depends(get_current_user)):
 
 
 @router.put("/{id}", response_model=Game)
-async def update_game(id: str, game: GameCreate, user=Depends(get_current_user)):
+async def update_game(id: str, game: GameCreate, user=Depends(get_current_studio_user)):
     res = await database.db.tracked_games.update_one(
         {"_id": id, "user_id": user["user_id"]}, {"$set": game.dict()}
     )
@@ -82,7 +82,7 @@ async def update_game(id: str, game: GameCreate, user=Depends(get_current_user))
 
 
 @router.delete("/{id}")
-async def delete_game(id: str, user=Depends(get_current_user)):
+async def delete_game(id: str, user=Depends(get_current_studio_user)):
     res = await database.db.tracked_games.delete_one({"_id": id, "user_id": user["user_id"]})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404)
@@ -98,3 +98,4 @@ async def delete_game(id: str, user=Depends(get_current_user)):
     )
 
     return {"message": "deleted"}
+
